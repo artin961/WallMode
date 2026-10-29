@@ -323,10 +323,11 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
      * the screen on and hands the UI reaction to [MainActivity].
      */
     private fun onMotionDetected() {
+        if (AppVisibility.userExited) return
         val settings = prefs.load()
         if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) return
 
-        if (WakeSignals.powerState.value == DisplayPowerState.OFF) {
+        if (!powerManager.isInteractive) {
             val now = SystemClock.elapsedRealtime()
             val lastWake = lastWakeAtMillis
             if (lastWake != null && now - lastWake < settings.presenceWakeCooldownSeconds * 1_000L) {
@@ -346,6 +347,8 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
      * it is already foreground.
      */
     private fun bringActivityForward() {
+        if (AppVisibility.userExited) return
+        if (AppVisibility.settingsOpen && powerManager.isInteractive) return
         val intent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra(MainActivity.EXTRA_WAKE_FROM_MOTION, true)

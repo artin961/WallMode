@@ -229,6 +229,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppVisibility.userExited = false
         presenceWakePermissionAttempted = savedInstanceState?.getBoolean(STATE_PRESENCE_PERMISSION_ATTEMPTED) ?: false
         prefs = KioskPreferences(this)
         announcementSpeaker = AnnouncementSpeaker(this)
@@ -2326,6 +2327,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun exitKioskNow() {
+        AppVisibility.userExited = true
+        PresenceWakeService.stop(this)   // call directly, not stopPresenceWakeService()
+        presenceWakeServiceRunning = false
         attemptStopLockTaskIfRunning()
         finishAndRemoveTask()
     }
