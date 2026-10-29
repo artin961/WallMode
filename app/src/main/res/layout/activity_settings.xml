@@ -1508,6 +1508,22 @@
                                         android:id="@+id/switch_lock_task_mode"
                                         style="@style/Widget.WallMode.SettingSwitch"
                                         android:text="@string/lock_task_mode" />
+
+                                    <TextView
+                                        android:id="@+id/device_owner_status"
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:layout_marginTop="10dp"
+                                        android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+                                        android:textColor="@color/settings_text_secondary" />
+
+                                    <com.google.android.material.button.MaterialButton
+                                        android:id="@+id/btn_release_device_owner"
+                                        style="@style/Widget.WallMode.Button.Danger"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:layout_marginTop="10dp"
+                                        android:text="@string/release_device_owner" />
                                 </LinearLayout>
                             </com.google.android.material.card.MaterialCardView>
 

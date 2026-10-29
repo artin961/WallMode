@@ -3,10 +3,12 @@ package io.github.rvbcrs.wallmode
 import android.app.DownloadManager
 import android.app.Dialog
 import android.app.ActivityManager
+import android.app.admin.DevicePolicyManager
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -229,6 +231,57 @@ class SettingsActivity : AppCompatActivity() {
         binding.btnExitKiosk.setOnClickListener {
             maybeExitKiosk()
         }
+        binding.btnReleaseDeviceOwner.setOnClickListener {
+            confirmReleaseDeviceOwner()
+        }
+    }
+
+    private fun confirmReleaseDeviceOwner() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (!dpm.isDeviceOwnerApp(packageName)) {
+            Toast.makeText(this, R.string.release_device_owner_not_owner, Toast.LENGTH_SHORT).show()
+            refreshDeviceOwnerStatus()
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.release_device_owner_confirm_title)
+            .setMessage(R.string.release_device_owner_confirm_message)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.release_device_owner) { _, _ -> releaseDeviceOwner(dpm) }
+            .show()
+    }
+
+    private fun releaseDeviceOwner(dpm: DevicePolicyManager) {
+        // Clearing the keyguard/lock-task policies first avoids leaving a
+        // half-applied device-owner state behind.
+        val admin = ComponentName(this, KioskDeviceAdminReceiver::class.java)
+        runCatching { if (isLockTaskRunning()) stopLockTask() }
+        runCatching { dpm.setLockTaskPackages(admin, emptyArray()) }
+        runCatching { dpm.setKeyguardDisabled(admin, false) }
+        val result = runCatching { dpm.clearDeviceOwnerApp(packageName) }
+        if (result.isSuccess) {
+            Toast.makeText(this, R.string.release_device_owner_done, Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(
+                this,
+                getString(R.string.release_device_owner_failed, result.exceptionOrNull()?.message ?: "unknown"),
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        refreshDeviceOwnerStatus()
+    }
+
+    private fun isLockTaskRunning(): Boolean =
+        getSystemService(ActivityManager::class.java).lockTaskModeState !=
+            ActivityManager.LOCK_TASK_MODE_NONE
+
+    private fun refreshDeviceOwnerStatus() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val isOwner = dpm.isDeviceOwnerApp(packageName)
+        binding.deviceOwnerStatus.setText(
+            if (isOwner) R.string.device_owner_status_active else R.string.device_owner_status_inactive
+        )
+        binding.btnReleaseDeviceOwner.visibility = if (isOwner) View.VISIBLE else View.GONE
     }
 
     internal fun showSupportLink(providerName: Int, url: String): AlertDialog {
@@ -618,6 +671,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.switchAutoStartBoot.isChecked = settings.autoStartOnBoot
         binding.switchFullscreen.isChecked = settings.fullscreen
         binding.switchLockTaskMode.isChecked = settings.lockTaskMode
+        refreshDeviceOwnerStatus()
         binding.switchAutoReloadOnFailure.isChecked = settings.autoReloadOnFailure
         binding.switchAutoDiscoverHomeAssistant.isChecked = settings.autoDiscoverHomeAssistant
 

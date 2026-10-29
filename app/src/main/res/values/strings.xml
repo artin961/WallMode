@@ -41,6 +41,14 @@
     <string name="engine_chromium_short">Chromium-like</string>
     <string name="browser_engine_notice">WebView-only runtime; Chromium-like changes the browser profile without adding another engine.</string>
     <string name="lock_task_mode">Enable lock task kiosk mode (device owner)</string>
+    <string name="release_device_owner">Release device owner</string>
+    <string name="device_owner_status_active">Device owner: active — deep sleep can fully power the screen off.</string>
+    <string name="device_owner_status_inactive">Device owner: not active — deep sleep falls back to a black screen (panel stays powered). Provision as device owner to enable true power-off.</string>
+    <string name="release_device_owner_confirm_title">Release device owner?</string>
+    <string name="release_device_owner_confirm_message">WallMode will give up device-owner privileges. Kiosk lock-task and true screen-off will stop working until the device is re-provisioned. This cannot be undone from the app.</string>
+    <string name="release_device_owner_done">Device owner released.</string>
+    <string name="release_device_owner_failed">Could not release device owner: %1$s</string>
+    <string name="release_device_owner_not_owner">The app is not currently device owner.</string>
 
     <string name="admin_password">Admin password</string>
     <string name="confirm_admin_password">Confirm admin password</string>
