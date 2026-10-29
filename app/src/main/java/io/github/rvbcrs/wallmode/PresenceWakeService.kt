@@ -1,0 +1,351 @@
+package io.github.rvbcrs.wallmode
+
+import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.hardware.camera2.CaptureRequest
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+import android.os.SystemClock
+import android.util.Log
+import android.util.Range
+import android.util.Size
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleService
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+/**
+ * Always-on foreground service that owns the presence-wake camera pipeline and
+ * the proximity sensor. It is deliberately decoupled from [MainActivity]'s
+ * lifecycle so motion detection keeps running while the screen is physically
+ * off (the Activity is paused/stopped at that point and can no longer host a
+ * [ProcessCameraProvider.bindToLifecycle] owner).
+ *
+ * On motion it briefly acquires a wake lock to power the panel back on and
+ * signals [MainActivity] via [WakeSignals] to run the actual screen-on
+ * sequence. Detection logic itself is unchanged — it reuses [MotionWakeDetector]
+ * and [ProximityWakeGate].
+ */
+class PresenceWakeService : LifecycleService(), SensorEventListener {
+
+    private lateinit var prefs: KioskPreferences
+
+    private val sensorManager: SensorManager by lazy {
+        getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    }
+    private val powerManager: PowerManager by lazy {
+        getSystemService(Context.POWER_SERVICE) as PowerManager
+    }
+
+    private val motionDetector = MotionWakeDetector()
+    private val proximityGate = ProximityWakeGate()
+
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var analysis: ImageAnalysis? = null
+    private var analysisExecutor: ExecutorService? = null
+    private var startPending = false
+    private var running = false
+
+    private var lastAnalysisAtMillis = 0L
+    private var lastWakeAtMillis: Long? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        prefs = KioskPreferences(this)
+    }
+
+    override fun onBind(intent: Intent): IBinder? {
+        super.onBind(intent)
+        return null
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        startForegroundNotification()
+        start()
+        // Not sticky: the Activity re-starts us from onResume, and a camera FGS
+        // may not be relaunched cold by the system on Android 14+ anyway.
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        stop()
+        super.onDestroy()
+    }
+
+    private fun start() {
+        if (running) return
+        running = true
+        registerProximitySensor()
+        startCameraPipeline()
+    }
+
+    private fun stop() {
+        running = false
+        sensorManager.unregisterListener(this)
+        proximityGate.reset()
+        stopCameraPipeline()
+        analysisExecutor?.shutdown()
+        analysisExecutor = null
+    }
+
+    // region Camera pipeline (ported from MainActivity, now service-owned)
+
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun startCameraPipeline() {
+        if (analysis != null || startPending) return
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            // The Activity is responsible for obtaining CAMERA before starting
+            // us; a service cannot request runtime permissions.
+            prefs.recordLastLoadStatus("Presence wake service: camera permission missing")
+            return
+        }
+        startPending = true
+
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            startPending = false
+            if (!running) return@addListener
+            val provider = runCatching { providerFuture.get() }.getOrElse { error ->
+                prefs.recordLastLoadStatus("Presence wake start failed: ${error.message}")
+                return@addListener
+            }
+            val selector = selectCamera(provider) ?: run {
+                prefs.recordLastLoadStatus("Presence wake unavailable: no camera found")
+                return@addListener
+            }
+
+            val analysisBuilder = ImageAnalysis.Builder()
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(
+                                Size(160, 120),
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                            )
+                        )
+                        .build()
+                )
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(
+                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                Range(15, 15)
+            )
+            val built = analysisBuilder.build()
+            built.setAnalyzer(ensureAnalysisExecutor()) { imageProxy ->
+                analyzeFrame(imageProxy)
+            }
+
+            runCatching {
+                // The service itself is the LifecycleOwner, so the binding
+                // survives screen-off (unlike the Activity-bound version).
+                provider.bindToLifecycle(this, selector, built)
+            }.onSuccess {
+                cameraProvider = provider
+                analysis = built
+                Log.i(TAG, "Presence wake camera started (service)")
+            }.onFailure { error ->
+                built.clearAnalyzer()
+                prefs.recordLastLoadStatus("Presence wake start failed: ${error.message}")
+                Log.w(TAG, "Presence wake camera failed", error)
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun stopCameraPipeline() {
+        analysis?.clearAnalyzer()
+        analysis?.let { active -> runCatching { cameraProvider?.unbind(active) } }
+        analysis = null
+        motionDetector.reset()
+        lastAnalysisAtMillis = 0L
+    }
+
+    private fun selectCamera(provider: ProcessCameraProvider): CameraSelector? {
+        return when {
+            runCatching { provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) }.getOrDefault(false) ->
+                CameraSelector.DEFAULT_FRONT_CAMERA
+            runCatching { provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) }.getOrDefault(false) ->
+                CameraSelector.DEFAULT_BACK_CAMERA
+            else -> null
+        }
+    }
+
+    private fun ensureAnalysisExecutor(): ExecutorService {
+        val existing = analysisExecutor
+        if (existing != null && !existing.isShutdown) return existing
+        return Executors.newSingleThreadExecutor().also { analysisExecutor = it }
+    }
+
+    private fun analyzeFrame(imageProxy: ImageProxy) {
+        val settings = prefs.load()
+        if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) {
+            imageProxy.close()
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastAnalysisAtMillis < PRESENCE_ANALYSIS_INTERVAL_MS) {
+            imageProxy.close()
+            return
+        }
+        lastAnalysisAtMillis = now
+
+        val luminance = imageProxy.planes.firstOrNull()
+        if (luminance == null) {
+            imageProxy.close()
+            return
+        }
+        val motionDetected = motionDetector.detect(
+            luminance.buffer,
+            imageProxy.width,
+            imageProxy.height,
+            luminance.rowStride,
+            luminance.pixelStride
+        )
+        imageProxy.close()
+        if (motionDetected) onMotionDetected()
+    }
+
+    // endregion
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type != Sensor.TYPE_PROXIMITY) return
+        val near = event.values.firstOrNull()?.let { it < event.sensor.maximumRange } ?: return
+        if (!proximityGate.update(near)) return
+        onMotionDetected()
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    private fun registerProximitySensor() {
+        sensorManager.unregisterListener(this)
+        proximityGate.reset()
+        sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)?.let { sensor ->
+            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+    }
+
+    /**
+     * Converges camera and proximity motion. Enforces the wake cooldown (moved
+     * here from the Activity) only while the panel is reported OFF, then powers
+     * the screen on and hands the UI reaction to [MainActivity].
+     */
+    private fun onMotionDetected() {
+        val settings = prefs.load()
+        if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) return
+
+        if (WakeSignals.powerState.value == DisplayPowerState.OFF) {
+            val now = SystemClock.elapsedRealtime()
+            val lastWake = lastWakeAtMillis
+            if (lastWake != null && now - lastWake < settings.presenceWakeCooldownSeconds * 1_000L) {
+                return
+            }
+            lastWakeAtMillis = now
+            Log.i(TAG, "Motion detected; waking screen")
+            acquireWakePulse()
+            bringActivityForward()
+        }
+        WakeSignals.requestWake()
+    }
+
+    /**
+     * Brings MainActivity (singleTask) to the foreground so a stopped or
+     * destroyed kiosk Activity is restored when the panel wakes. Harmless when
+     * it is already foreground.
+     */
+    private fun bringActivityForward() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(MainActivity.EXTRA_WAKE_FROM_MOTION, true)
+        }
+        runCatching { startActivity(intent) }
+            .onFailure { Log.w(TAG, "Could not bring activity forward", it) }
+    }
+
+    /**
+     * Momentary wake lock that forces the display on. Released automatically by
+     * the timeout; the Activity re-adds FLAG_KEEP_SCREEN_ON to keep it on once
+     * it is resumed, so this only needs to bridge the gap.
+     */
+    @SuppressLint("WakelockTimeout")
+    private fun acquireWakePulse() {
+        @Suppress("DEPRECATION")
+        val wakeLock = powerManager.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+            WAKE_LOCK_TAG
+        )
+        runCatching { wakeLock.acquire(WAKE_PULSE_TIMEOUT_MS) }
+            .onFailure { Log.w(TAG, "Wake pulse failed", it) }
+    }
+
+    private fun startForegroundNotification() {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.presence_wake_channel_name),
+            NotificationManager.IMPORTANCE_MIN
+        ).apply {
+            description = getString(R.string.presence_wake_channel_description)
+            setShowBadge(false)
+        }
+        manager.createNotificationChannel(channel)
+
+        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.presence_wake_notification_text))
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    companion object {
+        private const val TAG = "PresenceWakeService"
+        private const val CHANNEL_ID = "wallmode_presence_wake"
+        private const val NOTIFICATION_ID = 42
+        private const val PRESENCE_ANALYSIS_INTERVAL_MS = 250L
+        private const val WAKE_LOCK_TAG = "wallmode:presence-wake"
+        private const val WAKE_PULSE_TIMEOUT_MS = 5_000L
+
+        fun start(context: Context) {
+            val intent = Intent(context, PresenceWakeService::class.java)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun stop(context: Context) {
+            // Plain stopService: restarting a camera foreground service from the
+            // background (what startForegroundService would do) throws on
+            // Android 14+. The caller is the Activity, which is foregrounded.
+            context.stopService(Intent(context, PresenceWakeService::class.java))
+        }
+    }
+}

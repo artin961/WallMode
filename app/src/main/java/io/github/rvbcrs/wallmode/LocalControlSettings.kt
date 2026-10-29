@@ -109,8 +109,9 @@ internal object LocalControlSettings {
             Group("Presence wake", listOf(
                 toggle(KioskSettings::presenceWakeEnabled, "Wake on motion") { s, v -> s.copy(presenceWakeEnabled = v) },
                 number(KioskSettings::presenceWakeCooldownSeconds, "Presence wake cooldown (seconds)",
-                    KioskPreferences.MIN_PRESENCE_WAKE_COOLDOWN_SECONDS..KioskPreferences.MAX_PRESENCE_WAKE_COOLDOWN_SECONDS) { s, v -> s.copy(presenceWakeCooldownSeconds = v) }
-            ), "Uses proximity and the front camera to return to the dashboard. Camera permission must be granted on the tablet.")
+                    KioskPreferences.MIN_PRESENCE_WAKE_COOLDOWN_SECONDS..KioskPreferences.MAX_PRESENCE_WAKE_COOLDOWN_SECONDS) { s, v -> s.copy(presenceWakeCooldownSeconds = v) },
+                toggle(KioskSettings::deepSleepEnabled, "Turn screen off (deep sleep)") { s, v -> s.copy(deepSleepEnabled = v) }
+            ), "Uses proximity and the front camera to return to the dashboard. Camera permission must be granted on the tablet. Deep sleep powers the panel off (device-owner provisioning) instead of dimming.")
         ),
         "browser" to listOf(
             Group("Browser profile", listOf(

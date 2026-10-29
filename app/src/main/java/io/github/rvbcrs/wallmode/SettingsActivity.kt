@@ -303,6 +303,7 @@ class SettingsActivity : AppCompatActivity() {
             binding.switchMaintenanceEnabled,
             binding.switchAmbientFollowSystemBrightness,
             binding.switchPresenceWake,
+            binding.switchDeepSleep,
             binding.switchLocalControlPreview,
             binding.switchMqttTls
         ).forEach { control ->
@@ -668,6 +669,7 @@ class SettingsActivity : AppCompatActivity() {
             settings.ambientFollowSystemBrightness
         binding.switchPresenceWake.isChecked = settings.presenceWakeEnabled
         binding.inputPresenceWakeCooldown.setText(settings.presenceWakeCooldownSeconds.toString())
+        binding.switchDeepSleep.isChecked = settings.deepSleepEnabled
         binding.switchLocalControlEnabled.isChecked = settings.localControlEnabled
         binding.switchLocalControlPreview.isChecked = settings.localControlPreviewEnabled
         binding.inputLocalControlPort.setText(settings.localControlPort.toString())
@@ -800,6 +802,7 @@ class SettingsActivity : AppCompatActivity() {
             ambientFollowSystemBrightness = binding.switchAmbientFollowSystemBrightness.isChecked,
             presenceWakeEnabled = binding.switchPresenceWake.isChecked,
             presenceWakeCooldownSeconds = presenceWakeCooldown,
+            deepSleepEnabled = binding.switchDeepSleep.isChecked,
             mqttEnabled = binding.switchMqttEnabled.isChecked,
             mqttBrokerHost = binding.inputMqttBrokerHost.text?.toString().orEmpty(),
             mqttBrokerPort = mqttBrokerPort,

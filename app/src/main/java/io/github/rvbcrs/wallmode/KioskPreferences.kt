@@ -192,6 +192,7 @@ data class KioskSettings(
     val ambientFollowSystemBrightness: Boolean,
     val presenceWakeEnabled: Boolean,
     val presenceWakeCooldownSeconds: Int,
+    val deepSleepEnabled: Boolean,
     val autoDiscoverHomeAssistant: Boolean,
     val mqttEnabled: Boolean,
     val mqttBrokerHost: String,
@@ -396,6 +397,7 @@ class KioskPreferences(context: Context) {
                 MIN_PRESENCE_WAKE_COOLDOWN_SECONDS,
                 MAX_PRESENCE_WAKE_COOLDOWN_SECONDS
             ),
+            deepSleepEnabled = prefs.getBoolean(KEY_DEEP_SLEEP_ENABLED, DEFAULT_DEEP_SLEEP_ENABLED),
             autoDiscoverHomeAssistant = prefs.getBoolean(
                 KEY_AUTO_DISCOVER_HOME_ASSISTANT,
                 DEFAULT_AUTO_DISCOVER_HOME_ASSISTANT
@@ -580,6 +582,7 @@ class KioskPreferences(context: Context) {
                     MAX_PRESENCE_WAKE_COOLDOWN_SECONDS
                 )
             )
+            .putBoolean(KEY_DEEP_SLEEP_ENABLED, settings.deepSleepEnabled)
             .putBoolean(KEY_AUTO_DISCOVER_HOME_ASSISTANT, settings.autoDiscoverHomeAssistant)
             .putBoolean(KEY_MQTT_ENABLED, settings.mqttEnabled)
             .putString(KEY_MQTT_BROKER_HOST, settings.mqttBrokerHost.trim())
@@ -662,6 +665,7 @@ class KioskPreferences(context: Context) {
             ambientFollowSystemBrightness = DEFAULT_AMBIENT_FOLLOW_SYSTEM_BRIGHTNESS,
             presenceWakeEnabled = DEFAULT_PRESENCE_WAKE_ENABLED,
             presenceWakeCooldownSeconds = DEFAULT_PRESENCE_WAKE_COOLDOWN_SECONDS,
+            deepSleepEnabled = DEFAULT_DEEP_SLEEP_ENABLED,
             autoDiscoverHomeAssistant = DEFAULT_AUTO_DISCOVER_HOME_ASSISTANT,
             mqttEnabled = DEFAULT_MQTT_ENABLED,
             mqttBrokerHost = DEFAULT_MQTT_BROKER_HOST,
@@ -872,6 +876,7 @@ class KioskPreferences(context: Context) {
             put("ambientFollowSystemBrightness", settings.ambientFollowSystemBrightness)
             put("presenceWakeEnabled", settings.presenceWakeEnabled)
             put("presenceWakeCooldownSeconds", settings.presenceWakeCooldownSeconds)
+            put("deepSleepEnabled", settings.deepSleepEnabled)
             put("autoDiscoverHomeAssistant", settings.autoDiscoverHomeAssistant)
             put("mqttEnabled", settings.mqttEnabled)
             put("mqttBrokerHost", settings.mqttBrokerHost)
@@ -989,6 +994,7 @@ class KioskPreferences(context: Context) {
                 "presenceWakeCooldownSeconds",
                 current.presenceWakeCooldownSeconds
             ),
+            deepSleepEnabled = json.optBoolean("deepSleepEnabled", current.deepSleepEnabled),
             autoDiscoverHomeAssistant = json.optBoolean(
                 "autoDiscoverHomeAssistant",
                 current.autoDiscoverHomeAssistant
@@ -1114,6 +1120,7 @@ class KioskPreferences(context: Context) {
             "ambient_follow_system_brightness"
         private const val KEY_PRESENCE_WAKE_ENABLED = "presence_wake_enabled"
         private const val KEY_PRESENCE_WAKE_COOLDOWN_SECONDS = "presence_wake_cooldown_seconds"
+        private const val KEY_DEEP_SLEEP_ENABLED = "deep_sleep_enabled"
         private const val KEY_AUTO_DISCOVER_HOME_ASSISTANT = "auto_discover_home_assistant"
         private const val KEY_MQTT_ENABLED = "mqtt_enabled"
         private const val KEY_MQTT_BROKER_HOST = "mqtt_broker_host"
@@ -1192,6 +1199,7 @@ class KioskPreferences(context: Context) {
         const val DEFAULT_AMBIENT_FOLLOW_SYSTEM_BRIGHTNESS = false
         const val DEFAULT_PRESENCE_WAKE_ENABLED = false
         const val DEFAULT_PRESENCE_WAKE_COOLDOWN_SECONDS = 8
+        const val DEFAULT_DEEP_SLEEP_ENABLED = false
         const val DEFAULT_AUTO_DISCOVER_HOME_ASSISTANT = false
         const val DEFAULT_MQTT_ENABLED = false
         const val DEFAULT_MQTT_BROKER_HOST = ""

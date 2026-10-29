@@ -1,7 +1,6 @@
 package io.github.rvbcrs.wallmode
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.os.BatteryManager
 import android.app.admin.DevicePolicyManager
@@ -12,22 +11,16 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
-import android.hardware.camera2.CaptureRequest
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
-import android.util.Range
-import android.util.Size
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -46,19 +39,14 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
-import androidx.camera.camera2.interop.Camera2Interop
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.resolutionselector.ResolutionSelector
-import androidx.camera.core.resolutionselector.ResolutionStrategy
-import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
@@ -80,8 +68,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.ByteBuffer
 import java.util.Calendar
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
@@ -97,7 +83,7 @@ private data class ActiveEventTakeover(
     val webContentReplaced: Boolean
 )
 
-class MainActivity : AppCompatActivity(), SensorEventListener {
+class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var prefs: KioskPreferences
     private lateinit var announcementSpeaker: AnnouncementSpeaker
@@ -133,10 +119,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var pendingPresenceWakePermissionRequest = false
     private var presenceWakePermissionAttempted = false
     private var pendingStartupCameraPermissionRequest = false
-    private var presenceWakeAnalysis: ImageAnalysis? = null
-    private var presenceWakeCameraProvider: ProcessCameraProvider? = null
-    private var presenceWakeExecutor: ExecutorService? = null
-    private var presenceWakeStartPending = false
+    private var presenceWakeServiceRunning = false
 
     private var tapCount = 0
     private var firstTapAt = 0L
@@ -144,18 +127,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var networkCallbackRegistered = false
     private var watchdogFailureCount = 0
     private var isAmbientDimmed = false
+    private var isScreenOff = false
     private var updateCheckInProgress = false
     private var autoDiscoveryAttempted = false
-    private var lastPresenceAnalysisAtMillis = 0L
-    private var lastPresenceWakeAtMillis: Long? = null
-    private var presenceWakeRequested = false
     private var consumeAmbientWakeGesture = false
     private var ambientBackgroundRequest = 0
     private var ambientTransitionGeneration = 0
     private val mainFrameLoadState = MainFrameLoadState()
-
-    private val presenceMotionDetector = MotionWakeDetector()
-    private val proximityWakeGate = ProximityWakeGate()
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -182,7 +160,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 if (cameraGranted) {
                     applyPresenceWakePolicy()
                 } else {
-                    stopPresenceWakePipeline()
+                    stopPresenceWakeService()
                     prefs.recordLastLoadStatus("Presence wake unavailable: camera permission denied")
                 }
             }
@@ -210,10 +188,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private val connectivityManager: ConnectivityManager by lazy {
         getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    }
-
-    private val sensorManager: SensorManager by lazy {
-        getSystemService(Context.SENSOR_SERVICE) as SensorManager
     }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -269,6 +243,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         WebView.setWebContentsDebuggingEnabled(false)
 
         setupAdminGesture()
+        collectWakeSignals()
         registerNetworkMonitoring()
         applyWindowSettings()
         maybePromptStartupCameraPermission()
@@ -288,12 +263,33 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     override fun onResume() {
         super.onResume()
         prefs.applyThemeMode()
+        maybeHandleWakeIntent(intent)
         applyWindowSettings()
         resetAmbientTimer()
         applyPresenceWakePolicy()
         refreshLocalControlServer()
         refreshMqttManager()
         maybeAutoDiscoverAndConnect()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        maybeHandleWakeIntent(intent)
+    }
+
+    /**
+     * Handles the wake intent sent by [PresenceWakeService] when it detects
+     * motion while the panel is off and the Activity was not foreground. The
+     * WakeSignals collector covers the already-running case; this covers a cold
+     * relaunch where the wake emission may have preceded us. Runs before the
+     * ambient timer reset so the turn-screen-on flags are applied while
+     * isScreenOff is still true.
+     */
+    private fun maybeHandleWakeIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_WAKE_FROM_MOTION, false) != true) return
+        intent.removeExtra(EXTRA_WAKE_FROM_MOTION)
+        if (isScreenOff) wakeScreenFromMotion()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -324,10 +320,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
         autoDiscoveryJob?.cancel()
         stopAmbientBackground()
-        presenceWakeRequested = false
-        stopPresenceWakePipeline()
-        sensorManager.unregisterListener(this)
-        proximityWakeGate.reset()
+        // The presence-wake camera + proximity sensor now live in
+        // PresenceWakeService and intentionally keep running across onPause so
+        // motion detection survives a true screen-off (which pauses us).
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -376,14 +371,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         stopLocalControlServer()
         mqttManager?.stop()
         mqttManager = null
-        presenceWakeRequested = false
-        stopPresenceWakePipeline()
-        sensorManager.unregisterListener(this)
+        // PresenceWakeService is deliberately left running: if the Activity is
+        // destroyed while the screen is off, the service must stay alive to
+        // detect motion and relaunch us.
         mainHandler.removeCallbacksAndMessages(null)
         scope.cancel()
         destroyWebView()
-        presenceWakeExecutor?.shutdown()
-        presenceWakeExecutor = null
     }
 
     private fun setupAdminGesture() {
@@ -400,6 +393,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 tapCount = 0
                 firstTapAt = 0
                 requestAdminAccess()
+            }
+        }
+    }
+
+    /**
+     * Collects wake events from [PresenceWakeService] (which runs the camera and
+     * proximity sensor even while the screen is off) and runs the UI-side wake
+     * reaction. STARTED is enough — a screen-off Activity is STARTED, not
+     * RESUMED, when the service relaunches us.
+     */
+    private fun collectWakeSignals() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                WakeSignals.wakeEvents.collect {
+                    onPresenceDetected()
+                }
             }
         }
     }
@@ -1045,12 +1054,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         mainHandler.postDelayed(ambientDimRunnable!!, settings.ambientDimAfterSeconds * 1_000L)
     }
 
-    private fun enterAmbientMode(settings: KioskSettings, showScreensaver: Boolean) {
+    private fun enterAmbientMode(
+        settings: KioskSettings,
+        showScreensaver: Boolean,
+        deepSleep: Boolean = settings.deepSleepEnabled
+    ) {
         val transition = ++ambientTransitionGeneration
         binding.ambientScreensaver.animate().cancel()
         applyAmbientBrightness(settings)
-        presenceMotionDetector.reset()
-        lastPresenceAnalysisAtMillis = 0L
         isAmbientDimmed = true
         if (showScreensaver) {
             binding.ambientScreensaver.scene = settings.ambientScene
@@ -1090,11 +1101,82 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             stopAmbientBackground()
             binding.ambientScreensaver.visibility = View.GONE
         }
+        if (deepSleep) {
+            applyScreenOff(settings)
+        } else {
+            isScreenOff = false
+            WakeSignals.setPowerState(DisplayPowerState.ON)
+        }
         publishMqttState()
+    }
+
+    /**
+     * Powers the physical panel off (device owner) or falls back to a hard
+     * brightness-0 "fake off". FLAG_KEEP_SCREEN_ON must be cleared first, else
+     * lockNow() is immediately undone by the still-awake window. Called from
+     * [enterAmbientMode]; the camera keeps running in [PresenceWakeService].
+     */
+    private fun applyScreenOff(settings: KioskSettings) {
+        isScreenOff = true
+        WakeSignals.setPowerState(DisplayPowerState.OFF)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val admin = ComponentName(this, KioskDeviceAdminReceiver::class.java)
+        if (dpm.isDeviceOwnerApp(packageName)) {
+            // Keep the keyguard disabled so a wake lands straight on the kiosk
+            // rather than an undismissable lock screen.
+            runCatching { dpm.setKeyguardDisabled(admin, true) }
+            runCatching { dpm.lockNow() }
+                .onFailure { prefs.recordLastLoadStatus("Screen off failed: ${it.message}") }
+        } else {
+            // No device-owner privilege: can't power the panel off, so drive
+            // brightness to 0 and keep the window awake (fake off).
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            setWindowBrightness(0f)
+        }
+    }
+
+    /**
+     * Wakes the panel after motion while screen-off. The service has already
+     * fired a wake pulse (PowerManager wake lock) and relaunched us; here we add
+     * the turn-screen-on window flags and leave ambient mode. Safe to call when
+     * not actually off (no-op beyond leaving ambient mode).
+     */
+    private fun wakeScreenFromMotion() {
+        if (!isScreenOff) {
+            resetAmbientTimer()
+            return
+        }
+        Log.i(TAG, "Motion detected; waking screen")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+        if (prefs.load().keepScreenOn) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        isScreenOff = false
+        WakeSignals.setPowerState(DisplayPowerState.ON)
+        resetAmbientTimer()
     }
 
     private fun leaveAmbientMode() {
         val wasAmbient = isAmbientDimmed
+        if (isScreenOff) {
+            // Restore the awake-window policy a screen-off may have cleared.
+            isScreenOff = false
+            WakeSignals.setPowerState(DisplayPowerState.ON)
+            if (prefs.load().keepScreenOn) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        }
         screensaverWeatherJob?.cancel()
         screensaverWeatherJob = null
         cancelAmbientBackgroundLoading()
@@ -1258,27 +1340,23 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
+    /**
+     * Starts or stops [PresenceWakeService] based on settings. The service, not
+     * the Activity, owns the camera and proximity sensor so detection survives a
+     * true screen-off. The Activity still owns the CAMERA runtime grant because a
+     * service cannot request permissions.
+     */
     private fun applyPresenceWakePolicy() {
         val settings = prefs.load()
-        sensorManager.unregisterListener(this)
-        proximityWakeGate.reset()
-        if (settings.ambientModeEnabled && settings.presenceWakeEnabled) {
-            sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)?.let { sensor ->
-                sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-            }
-        }
-
-        val shouldRunCamera = settings.ambientModeEnabled && settings.presenceWakeEnabled
-        if (!shouldRunCamera) {
+        val shouldRun = settings.ambientModeEnabled && settings.presenceWakeEnabled
+        if (!shouldRun) {
             presenceWakePermissionAttempted = false
-            presenceWakeRequested = false
-            stopPresenceWakePipeline()
+            stopPresenceWakeService()
             return
         }
-        presenceWakeRequested = true
 
         if (!hasAllPermissions(arrayOf(Manifest.permission.CAMERA))) {
-            stopPresenceWakePipeline()
+            stopPresenceWakeService()
             if (!pendingPresenceWakePermissionRequest && !presenceWakePermissionAttempted) {
                 presenceWakePermissionAttempted = true
                 pendingPresenceWakePermissionRequest = true
@@ -1288,107 +1366,23 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
 
         presenceWakePermissionAttempted = false
-        startPresenceWakePipeline()
+        startPresenceWakeService()
     }
 
-    override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type != Sensor.TYPE_PROXIMITY) return
-        val near = event.values.firstOrNull()?.let { it < event.sensor.maximumRange } ?: return
-        if (!proximityWakeGate.update(near)) return
-
-        onPresenceDetected()
+    private fun startPresenceWakeService() {
+        if (presenceWakeServiceRunning) return
+        // A camera foreground service must be started from a visible context
+        // (we are in onResume here); starting it cold from boot throws on
+        // Android 14+.
+        runCatching { PresenceWakeService.start(this) }
+            .onSuccess { presenceWakeServiceRunning = true }
+            .onFailure { prefs.recordLastLoadStatus("Presence wake service start failed: ${it.message}") }
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
-
-    private fun ensurePresenceWakeExecutor(): ExecutorService {
-        val existing = presenceWakeExecutor
-        if (existing != null && !existing.isShutdown) {
-            return existing
-        }
-        return Executors.newSingleThreadExecutor().also { presenceWakeExecutor = it }
-    }
-
-    @SuppressLint("UnsafeOptInUsageError")
-    private fun startPresenceWakePipeline() {
-        if (presenceWakeAnalysis != null || presenceWakeStartPending) {
-            return
-        }
-        presenceWakeStartPending = true
-
-        val providerFuture = ProcessCameraProvider.getInstance(this)
-        providerFuture.addListener({
-            presenceWakeStartPending = false
-            if (!presenceWakeRequested) {
-                return@addListener
-            }
-            val provider = runCatching { providerFuture.get() }.getOrElse { error ->
-                prefs.recordLastLoadStatus("Presence wake start failed: ${error.message}")
-                return@addListener
-            }
-            if (!prefs.load().presenceWakeEnabled || !prefs.load().ambientModeEnabled) {
-                return@addListener
-            }
-
-            val selector = selectPresenceCamera(provider) ?: run {
-                prefs.recordLastLoadStatus("Presence wake unavailable: no camera found")
-                return@addListener
-            }
-
-            val analysisBuilder = ImageAnalysis.Builder()
-                .setResolutionSelector(
-                    ResolutionSelector.Builder()
-                        .setResolutionStrategy(
-                            ResolutionStrategy(
-                                Size(160, 120),
-                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
-                            )
-                        )
-                        .build()
-                )
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(
-                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                Range(15, 15)
-            )
-            val analysis = analysisBuilder.build()
-
-            analysis.setAnalyzer(ensurePresenceWakeExecutor()) { imageProxy ->
-                analyzePresenceWakeFrame(imageProxy)
-            }
-
-            runCatching {
-                provider.bindToLifecycle(this, selector, analysis)
-            }.onSuccess {
-                presenceWakeCameraProvider = provider
-                presenceWakeAnalysis = analysis
-                Log.i(TAG, "Motion wake camera started")
-            }.onFailure { error ->
-                analysis.clearAnalyzer()
-                prefs.recordLastLoadStatus("Presence wake start failed: ${error.message}")
-                Log.w(TAG, "Motion wake camera failed", error)
-            }
-        }, ContextCompat.getMainExecutor(this))
-    }
-
-    private fun stopPresenceWakePipeline() {
-        presenceWakeAnalysis?.clearAnalyzer()
-        presenceWakeAnalysis?.let { analysis ->
-            runCatching { presenceWakeCameraProvider?.unbind(analysis) }
-        }
-        presenceWakeAnalysis = null
-        presenceMotionDetector.reset()
-        lastPresenceAnalysisAtMillis = 0L
-    }
-
-    private fun selectPresenceCamera(provider: ProcessCameraProvider): CameraSelector? {
-        return when {
-            runCatching { provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) }.getOrDefault(false) ->
-                CameraSelector.DEFAULT_FRONT_CAMERA
-            runCatching { provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) }.getOrDefault(false) ->
-                CameraSelector.DEFAULT_BACK_CAMERA
-            else -> null
-        }
+    private fun stopPresenceWakeService() {
+        if (!presenceWakeServiceRunning) return
+        runCatching { PresenceWakeService.stop(this) }
+        presenceWakeServiceRunning = false
     }
 
     private fun maybePromptStartupCameraPermission() {
@@ -1764,8 +1758,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 leaveAmbientMode()
                 val settings = prefs.load()
                 when (command.mode) {
-                    MqttContract.DISPLAY_DIM -> enterAmbientMode(settings, showScreensaver = false)
-                    MqttContract.DISPLAY_SCREENSAVER -> enterAmbientMode(settings, showScreensaver = true)
+                    MqttContract.DISPLAY_DIM ->
+                        enterAmbientMode(settings, showScreensaver = false, deepSleep = false)
+                    MqttContract.DISPLAY_SCREENSAVER ->
+                        enterAmbientMode(settings, showScreensaver = true, deepSleep = false)
+                    MqttContract.DISPLAY_OFF ->
+                        enterAmbientMode(settings, showScreensaver = false, deepSleep = true)
                     else -> resetAmbientTimer()
                 }
                 publishMqttState()
@@ -1831,13 +1829,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         )
     }
 
-    private fun currentDisplayMode(): String {
-        return when {
-            !isAmbientDimmed -> MqttContract.DISPLAY_DASHBOARD
-            binding.ambientScreensaver.visibility == View.VISIBLE -> MqttContract.DISPLAY_SCREENSAVER
-            else -> MqttContract.DISPLAY_DIM
-        }
-    }
+    private fun currentDisplayMode(): String =
+        DisplayModeResolver.displayMode(
+            isAmbientDimmed = isAmbientDimmed,
+            isScreenOff = isScreenOff,
+            screensaverVisible = binding.ambientScreensaver.visibility == View.VISIBLE
+        )
 
     private fun reloadCurrentTarget() {
         val takeover = activeEventTakeover
@@ -2025,8 +2022,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
         if (restoreDisplayMode) {
             when (takeover.returnDisplayMode) {
-                MqttContract.DISPLAY_DIM -> enterAmbientMode(prefs.load(), showScreensaver = false)
-                MqttContract.DISPLAY_SCREENSAVER -> enterAmbientMode(prefs.load(), showScreensaver = true)
+                MqttContract.DISPLAY_DIM ->
+                    enterAmbientMode(prefs.load(), showScreensaver = false, deepSleep = false)
+                MqttContract.DISPLAY_SCREENSAVER ->
+                    enterAmbientMode(prefs.load(), showScreensaver = true, deepSleep = false)
+                MqttContract.DISPLAY_OFF ->
+                    enterAmbientMode(prefs.load(), showScreensaver = false, deepSleep = true)
                 else -> resetAmbientTimer()
             }
         }
@@ -2058,54 +2059,24 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }.toString()
     }
 
-    private fun analyzePresenceWakeFrame(imageProxy: ImageProxy) {
-        val settings = prefs.load()
-        if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) {
-            imageProxy.close()
-            return
-        }
-
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastPresenceAnalysisAtMillis < PRESENCE_ANALYSIS_INTERVAL_MS) {
-            imageProxy.close()
-            return
-        }
-        lastPresenceAnalysisAtMillis = now
-
-        val luminance = imageProxy.planes.firstOrNull()
-        if (luminance == null) {
-            imageProxy.close()
-            return
-        }
-
-        val motionDetected = presenceMotionDetector.detect(
-            luminance.buffer,
-            imageProxy.width,
-            imageProxy.height,
-            luminance.rowStride,
-            luminance.pixelStride
-        )
-        imageProxy.close()
-        if (motionDetected) {
-            onPresenceDetected()
-        }
-    }
-
+    /**
+     * UI reaction to a motion detection. Invoked on the main thread from the
+     * [WakeSignals] collector (fed by [PresenceWakeService]) and directly from
+     * instrumentation tests. When the panel is off it is woken via
+     * [wakeScreenFromMotion]; otherwise this just undims / resets the idle timer.
+     * The hardware wake pulse and the screen-off cooldown live in the service.
+     */
     internal fun onPresenceDetected() {
         mainHandler.post {
-            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@post
             val settings = prefs.load()
             if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) return@post
             mqttManager?.publishMotion()
-
-            // Cooldown limits waking, never activity that postpones the idle deadline.
+            if (isScreenOff) {
+                wakeScreenFromMotion()
+                return@post
+            }
+            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return@post
             if (isAmbientDimmed) {
-                val now = SystemClock.elapsedRealtime()
-                val lastWake = lastPresenceWakeAtMillis
-                if (lastWake != null && now - lastWake < settings.presenceWakeCooldownSeconds * 1_000L) {
-                    return@post
-                }
-                lastPresenceWakeAtMillis = now
                 Log.i(TAG, "Motion detected; leaving ambient mode")
             }
             resetAmbientTimer()
@@ -2378,6 +2349,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     companion object {
+        const val EXTRA_WAKE_FROM_MOTION = "io.github.rvbcrs.wallmode.extra.WAKE_FROM_MOTION"
         private const val TAG = "WallModeMain"
         private const val ADMIN_GESTURE_TAP_COUNT = 5
         private const val ADMIN_GESTURE_WINDOW_MS = 2_500L
@@ -2387,7 +2359,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         private const val SCREENSAVER_WEATHER_REFRESH_MS = 30 * 60_000L
         private const val MQTT_STATE_INTERVAL_MS = 60_000L
         private const val MAIN_FRAME_LOAD_TIMEOUT_MS = 30_000L
-        private const val PRESENCE_ANALYSIS_INTERVAL_MS = 250L
         private const val PREVIEW_MAX_DIMENSION_PX = 720
         private const val PREVIEW_CAPTURE_TIMEOUT_SECONDS = 3L
         private const val PREVIEW_JPEG_QUALITY = 65

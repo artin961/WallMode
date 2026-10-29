@@ -1293,6 +1293,20 @@
                                         android:inputType="number"
                                         android:maxLines="1" />
                                 </com.google.android.material.textfield.TextInputLayout>
+
+                                <com.google.android.material.switchmaterial.SwitchMaterial
+                                    android:id="@+id/switch_deep_sleep"
+                                    style="@style/Widget.WallMode.SettingSwitch"
+                                    android:layout_marginTop="10dp"
+                                    android:text="@string/deep_sleep_enabled" />
+
+                                <TextView
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="2dp"
+                                    android:text="@string/deep_sleep_notice"
+                                    android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                                    android:textColor="@color/settings_text_secondary" />
                             </LinearLayout>
                         </com.google.android.material.card.MaterialCardView>
                     </LinearLayout>

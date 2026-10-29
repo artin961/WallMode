@@ -92,6 +92,7 @@ internal object MqttContract {
     const val DISPLAY_DASHBOARD = "Dashboard"
     const val DISPLAY_DIM = "Dim"
     const val DISPLAY_SCREENSAVER = "Clock + weather"
+    const val DISPLAY_OFF = "Off"
     const val ENGINE_WEBVIEW = "Android WebView"
     const val ENGINE_CHROMIUM = "Chromium-like"
     const val SCENE_AURORA_WEATHER = "Aurora weather"
@@ -202,7 +203,10 @@ internal object MqttContract {
                 else -> null
             }
             "display_mode" -> payload
-                .takeIf { it == DISPLAY_DASHBOARD || it == DISPLAY_DIM || it == DISPLAY_SCREENSAVER }
+                .takeIf {
+                    it == DISPLAY_DASHBOARD || it == DISPLAY_DIM ||
+                        it == DISPLAY_SCREENSAVER || it == DISPLAY_OFF
+                }
                 ?.let(WallModeMqttCommand::SetDisplayMode)
             else -> null
         }
@@ -815,7 +819,8 @@ internal class MqttManager(
             put("options", JSONArray(listOf(
                 MqttContract.DISPLAY_DASHBOARD,
                 MqttContract.DISPLAY_DIM,
-                MqttContract.DISPLAY_SCREENSAVER
+                MqttContract.DISPLAY_SCREENSAVER,
+                MqttContract.DISPLAY_OFF
             )))
             put("command_topic", "${commandPrefix}display_mode")
         })
