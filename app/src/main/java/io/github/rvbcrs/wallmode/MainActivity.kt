@@ -2328,8 +2328,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun exitKioskNow() {
         AppVisibility.userExited = true
-        PresenceWakeService.stop(this)   // call directly, not stopPresenceWakeService()
-        presenceWakeServiceRunning = false
+        stopPresenceWakeService()
         attemptStopLockTaskIfRunning()
         finishAndRemoveTask()
     }
