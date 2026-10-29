@@ -81,6 +81,7 @@ class DisplayModeResolverTest {
         ambientWeatherLocation = "Warnsveld", ambientDimAfterSeconds = 60, ambientBrightnessPercent = 25,
         ambientFollowSystemBrightness = false, presenceWakeEnabled = true, presenceWakeCooldownSeconds = 10,
         deepSleepEnabled = deepSleep,
+        illuminanceReportingEnabled = false, illuminanceMinDeltaLux = 10, illuminanceDebounceSeconds = 10,
         autoDiscoverHomeAssistant = false, mqttEnabled = true, mqttBrokerHost = "mqtt.local",
         mqttBrokerPort = 1883, mqttUseTls = false, mqttUsername = "tablet",
         localControlEnabled = true, localControlPort = 8099, localControlPreviewEnabled = false

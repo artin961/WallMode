@@ -244,6 +244,7 @@ class MainActivity : AppCompatActivity() {
 
         setupAdminGesture()
         collectWakeSignals()
+        collectIlluminanceSignals()
         registerNetworkMonitoring()
         applyWindowSettings()
         maybePromptStartupCameraPermission()
@@ -409,6 +410,21 @@ class MainActivity : AppCompatActivity() {
                 WakeSignals.wakeEvents.collect {
                     onPresenceDetected()
                 }
+            }
+        }
+    }
+
+    /**
+     * Publishes MQTT state when [PresenceWakeService] reports a significant
+     * illuminance change (the delta/debounce gate lives in the service). The
+     * latest lux is read from [IlluminanceState] when the payload is built. This
+     * deliberately does NOT gate on lifecycle: the service reports while the
+     * screen is fully off (Activity paused), and we must still publish then.
+     */
+    private fun collectIlluminanceSignals() {
+        lifecycleScope.launch {
+            IlluminanceState.publishRequests.collect {
+                publishMqttState()
             }
         }
     }
@@ -1341,38 +1357,45 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Starts or stops [PresenceWakeService] based on settings. The service, not
-     * the Activity, owns the camera and proximity sensor so detection survives a
-     * true screen-off. The Activity still owns the CAMERA runtime grant because a
-     * service cannot request permissions.
+     * Starts, reconfigures, or stops [PresenceWakeService] based on settings.
+     * The service runs when presence-wake OR illuminance reporting is enabled;
+     * it owns the camera and both sensors so they survive a true screen-off. The
+     * Activity still owns the CAMERA runtime grant (only needed for presence
+     * wake) because a service cannot request permissions.
      */
     private fun applyPresenceWakePolicy() {
         val settings = prefs.load()
-        val shouldRun = settings.ambientModeEnabled && settings.presenceWakeEnabled
-        if (!shouldRun) {
+        val wantPresence = settings.ambientModeEnabled && settings.presenceWakeEnabled
+        val wantIlluminance = settings.illuminanceReportingEnabled
+        if (!wantPresence && !wantIlluminance) {
             presenceWakePermissionAttempted = false
             stopPresenceWakeService()
             return
         }
 
-        if (!hasAllPermissions(arrayOf(Manifest.permission.CAMERA))) {
-            stopPresenceWakeService()
+        // Only presence wake needs the camera; illuminance alone does not.
+        if (wantPresence && !hasAllPermissions(arrayOf(Manifest.permission.CAMERA))) {
             if (!pendingPresenceWakePermissionRequest && !presenceWakePermissionAttempted) {
                 presenceWakePermissionAttempted = true
                 pendingPresenceWakePermissionRequest = true
                 permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
             }
-            return
+            if (!wantIlluminance) {
+                stopPresenceWakeService()
+                return
+            }
+            // Fall through: still run the service for illuminance while the
+            // camera permission prompt is pending.
         }
 
-        presenceWakePermissionAttempted = false
+        if (wantPresence) presenceWakePermissionAttempted = false
         startPresenceWakeService()
     }
 
     private fun startPresenceWakeService() {
-        if (presenceWakeServiceRunning) return
-        // A camera foreground service must be started from a visible context
-        // (we are in onResume here); starting it cold from boot throws on
+        // startForegroundService also re-delivers to a running service, which
+        // triggers its reconfigure path to pick up changed settings. Must be
+        // called from a visible context (onResume) — a cold camera FGS throws on
         // Android 14+.
         runCatching { PresenceWakeService.start(this) }
             .onSuccess { presenceWakeServiceRunning = true }
@@ -1824,7 +1847,12 @@ class MainActivity : AppCompatActivity() {
                 networkConnected = networkConnected,
                 takeoverActive = takeover != null,
                 takeoverId = takeover?.id.orEmpty(),
-                takeoverPriority = takeover?.priority ?: 0
+                takeoverPriority = takeover?.priority ?: 0,
+                illuminanceLux = if (settings.illuminanceReportingEnabled) {
+                    IlluminanceState.currentLux()
+                } else {
+                    null
+                }
             )
         )
     }

@@ -49,7 +49,8 @@ internal data class WallModeMqttState(
     val networkConnected: Boolean,
     val takeoverActive: Boolean,
     val takeoverId: String,
-    val takeoverPriority: Int
+    val takeoverPriority: Int,
+    val illuminanceLux: Float?
 )
 
 internal sealed interface WallModeMqttCommand {
@@ -635,6 +636,9 @@ internal class MqttManager(
             put("takeover_active", state.takeoverActive)
             put("takeover_id", state.takeoverId)
             put("takeover_priority", state.takeoverPriority)
+            // Only include illuminance when a reading exists so HA shows
+            // "unavailable" rather than a stale/zero value when unsupported.
+            state.illuminanceLux?.let { put("illuminance", (it * 10).toInt() / 10.0) }
         }.toString()
         publish(stateTopic, payload, retained = true)
     }
@@ -680,6 +684,13 @@ internal class MqttManager(
             put("device_class", "battery")
             put("unit_of_measurement", "%")
             put("state_class", "measurement")
+        })
+        components.put("illuminance", stateComponent("illuminance", "sensor", "Illuminance", "illuminance").apply {
+            put("device_class", "illuminance")
+            put("unit_of_measurement", "lx")
+            put("state_class", "measurement")
+            // Absent key → empty state → HA shows "unavailable" rather than 0.
+            put("value_template", "{{ value_json.illuminance | default('', true) }}")
         })
         components.put("charging", component("charging", "binary_sensor", "Charging").apply {
             put("device_class", "battery_charging")

@@ -357,6 +357,7 @@ class SettingsActivity : AppCompatActivity() {
             binding.switchAmbientFollowSystemBrightness,
             binding.switchPresenceWake,
             binding.switchDeepSleep,
+            binding.switchIlluminanceReporting,
             binding.switchLocalControlPreview,
             binding.switchMqttTls
         ).forEach { control ->
@@ -396,6 +397,8 @@ class SettingsActivity : AppCompatActivity() {
             binding.inputAmbientDimAfter,
             binding.inputAmbientBrightness,
             binding.inputPresenceWakeCooldown,
+            binding.inputIlluminanceMinDelta,
+            binding.inputIlluminanceDebounce,
             binding.inputLocalControlPort,
             binding.inputMqttBrokerHost,
             binding.inputMqttBrokerPort,
@@ -724,6 +727,9 @@ class SettingsActivity : AppCompatActivity() {
         binding.switchPresenceWake.isChecked = settings.presenceWakeEnabled
         binding.inputPresenceWakeCooldown.setText(settings.presenceWakeCooldownSeconds.toString())
         binding.switchDeepSleep.isChecked = settings.deepSleepEnabled
+        binding.switchIlluminanceReporting.isChecked = settings.illuminanceReportingEnabled
+        binding.inputIlluminanceMinDelta.setText(settings.illuminanceMinDeltaLux.toString())
+        binding.inputIlluminanceDebounce.setText(settings.illuminanceDebounceSeconds.toString())
         binding.switchLocalControlEnabled.isChecked = settings.localControlEnabled
         binding.switchLocalControlPreview.isChecked = settings.localControlPreviewEnabled
         binding.inputLocalControlPort.setText(settings.localControlPort.toString())
@@ -785,6 +791,10 @@ class SettingsActivity : AppCompatActivity() {
             ?: current.ambientPhotoIntervalSeconds
         val presenceWakeCooldown = binding.inputPresenceWakeCooldown.text?.toString()?.trim()?.toIntOrNull()
             ?: current.presenceWakeCooldownSeconds
+        val illuminanceMinDelta = binding.inputIlluminanceMinDelta.text?.toString()?.trim()?.toIntOrNull()
+            ?: current.illuminanceMinDeltaLux
+        val illuminanceDebounce = binding.inputIlluminanceDebounce.text?.toString()?.trim()?.toIntOrNull()
+            ?: current.illuminanceDebounceSeconds
         val localControlPort = binding.inputLocalControlPort.text?.toString()?.trim()?.toIntOrNull()
             ?: current.localControlPort
         val mqttBrokerPort = binding.inputMqttBrokerPort.text?.toString()?.trim()?.toIntOrNull()
@@ -857,6 +867,9 @@ class SettingsActivity : AppCompatActivity() {
             presenceWakeEnabled = binding.switchPresenceWake.isChecked,
             presenceWakeCooldownSeconds = presenceWakeCooldown,
             deepSleepEnabled = binding.switchDeepSleep.isChecked,
+            illuminanceReportingEnabled = binding.switchIlluminanceReporting.isChecked,
+            illuminanceMinDeltaLux = illuminanceMinDelta,
+            illuminanceDebounceSeconds = illuminanceDebounce,
             mqttEnabled = binding.switchMqttEnabled.isChecked,
             mqttBrokerHost = binding.inputMqttBrokerHost.text?.toString().orEmpty(),
             mqttBrokerPort = mqttBrokerPort,

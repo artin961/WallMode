@@ -193,6 +193,9 @@ data class KioskSettings(
     val presenceWakeEnabled: Boolean,
     val presenceWakeCooldownSeconds: Int,
     val deepSleepEnabled: Boolean,
+    val illuminanceReportingEnabled: Boolean,
+    val illuminanceMinDeltaLux: Int,
+    val illuminanceDebounceSeconds: Int,
     val autoDiscoverHomeAssistant: Boolean,
     val mqttEnabled: Boolean,
     val mqttBrokerHost: String,
@@ -398,6 +401,20 @@ class KioskPreferences(context: Context) {
                 MAX_PRESENCE_WAKE_COOLDOWN_SECONDS
             ),
             deepSleepEnabled = prefs.getBoolean(KEY_DEEP_SLEEP_ENABLED, DEFAULT_DEEP_SLEEP_ENABLED),
+            illuminanceReportingEnabled = prefs.getBoolean(
+                KEY_ILLUMINANCE_REPORTING_ENABLED,
+                DEFAULT_ILLUMINANCE_REPORTING_ENABLED
+            ),
+            illuminanceMinDeltaLux = clampInt(
+                prefs.getInt(KEY_ILLUMINANCE_MIN_DELTA_LUX, DEFAULT_ILLUMINANCE_MIN_DELTA_LUX),
+                MIN_ILLUMINANCE_MIN_DELTA_LUX,
+                MAX_ILLUMINANCE_MIN_DELTA_LUX
+            ),
+            illuminanceDebounceSeconds = clampInt(
+                prefs.getInt(KEY_ILLUMINANCE_DEBOUNCE_SECONDS, DEFAULT_ILLUMINANCE_DEBOUNCE_SECONDS),
+                MIN_ILLUMINANCE_DEBOUNCE_SECONDS,
+                MAX_ILLUMINANCE_DEBOUNCE_SECONDS
+            ),
             autoDiscoverHomeAssistant = prefs.getBoolean(
                 KEY_AUTO_DISCOVER_HOME_ASSISTANT,
                 DEFAULT_AUTO_DISCOVER_HOME_ASSISTANT
@@ -583,6 +600,23 @@ class KioskPreferences(context: Context) {
                 )
             )
             .putBoolean(KEY_DEEP_SLEEP_ENABLED, settings.deepSleepEnabled)
+            .putBoolean(KEY_ILLUMINANCE_REPORTING_ENABLED, settings.illuminanceReportingEnabled)
+            .putInt(
+                KEY_ILLUMINANCE_MIN_DELTA_LUX,
+                clampInt(
+                    settings.illuminanceMinDeltaLux,
+                    MIN_ILLUMINANCE_MIN_DELTA_LUX,
+                    MAX_ILLUMINANCE_MIN_DELTA_LUX
+                )
+            )
+            .putInt(
+                KEY_ILLUMINANCE_DEBOUNCE_SECONDS,
+                clampInt(
+                    settings.illuminanceDebounceSeconds,
+                    MIN_ILLUMINANCE_DEBOUNCE_SECONDS,
+                    MAX_ILLUMINANCE_DEBOUNCE_SECONDS
+                )
+            )
             .putBoolean(KEY_AUTO_DISCOVER_HOME_ASSISTANT, settings.autoDiscoverHomeAssistant)
             .putBoolean(KEY_MQTT_ENABLED, settings.mqttEnabled)
             .putString(KEY_MQTT_BROKER_HOST, settings.mqttBrokerHost.trim())
@@ -666,6 +700,9 @@ class KioskPreferences(context: Context) {
             presenceWakeEnabled = DEFAULT_PRESENCE_WAKE_ENABLED,
             presenceWakeCooldownSeconds = DEFAULT_PRESENCE_WAKE_COOLDOWN_SECONDS,
             deepSleepEnabled = DEFAULT_DEEP_SLEEP_ENABLED,
+            illuminanceReportingEnabled = DEFAULT_ILLUMINANCE_REPORTING_ENABLED,
+            illuminanceMinDeltaLux = DEFAULT_ILLUMINANCE_MIN_DELTA_LUX,
+            illuminanceDebounceSeconds = DEFAULT_ILLUMINANCE_DEBOUNCE_SECONDS,
             autoDiscoverHomeAssistant = DEFAULT_AUTO_DISCOVER_HOME_ASSISTANT,
             mqttEnabled = DEFAULT_MQTT_ENABLED,
             mqttBrokerHost = DEFAULT_MQTT_BROKER_HOST,
@@ -877,6 +914,9 @@ class KioskPreferences(context: Context) {
             put("presenceWakeEnabled", settings.presenceWakeEnabled)
             put("presenceWakeCooldownSeconds", settings.presenceWakeCooldownSeconds)
             put("deepSleepEnabled", settings.deepSleepEnabled)
+            put("illuminanceReportingEnabled", settings.illuminanceReportingEnabled)
+            put("illuminanceMinDeltaLux", settings.illuminanceMinDeltaLux)
+            put("illuminanceDebounceSeconds", settings.illuminanceDebounceSeconds)
             put("autoDiscoverHomeAssistant", settings.autoDiscoverHomeAssistant)
             put("mqttEnabled", settings.mqttEnabled)
             put("mqttBrokerHost", settings.mqttBrokerHost)
@@ -995,6 +1035,18 @@ class KioskPreferences(context: Context) {
                 current.presenceWakeCooldownSeconds
             ),
             deepSleepEnabled = json.optBoolean("deepSleepEnabled", current.deepSleepEnabled),
+            illuminanceReportingEnabled = json.optBoolean(
+                "illuminanceReportingEnabled",
+                current.illuminanceReportingEnabled
+            ),
+            illuminanceMinDeltaLux = json.optInt(
+                "illuminanceMinDeltaLux",
+                current.illuminanceMinDeltaLux
+            ),
+            illuminanceDebounceSeconds = json.optInt(
+                "illuminanceDebounceSeconds",
+                current.illuminanceDebounceSeconds
+            ),
             autoDiscoverHomeAssistant = json.optBoolean(
                 "autoDiscoverHomeAssistant",
                 current.autoDiscoverHomeAssistant
@@ -1121,6 +1173,9 @@ class KioskPreferences(context: Context) {
         private const val KEY_PRESENCE_WAKE_ENABLED = "presence_wake_enabled"
         private const val KEY_PRESENCE_WAKE_COOLDOWN_SECONDS = "presence_wake_cooldown_seconds"
         private const val KEY_DEEP_SLEEP_ENABLED = "deep_sleep_enabled"
+        private const val KEY_ILLUMINANCE_REPORTING_ENABLED = "illuminance_reporting_enabled"
+        private const val KEY_ILLUMINANCE_MIN_DELTA_LUX = "illuminance_min_delta_lux"
+        private const val KEY_ILLUMINANCE_DEBOUNCE_SECONDS = "illuminance_debounce_seconds"
         private const val KEY_AUTO_DISCOVER_HOME_ASSISTANT = "auto_discover_home_assistant"
         private const val KEY_MQTT_ENABLED = "mqtt_enabled"
         private const val KEY_MQTT_BROKER_HOST = "mqtt_broker_host"
@@ -1200,6 +1255,13 @@ class KioskPreferences(context: Context) {
         const val DEFAULT_PRESENCE_WAKE_ENABLED = false
         const val DEFAULT_PRESENCE_WAKE_COOLDOWN_SECONDS = 8
         const val DEFAULT_DEEP_SLEEP_ENABLED = false
+        const val DEFAULT_ILLUMINANCE_REPORTING_ENABLED = false
+        const val DEFAULT_ILLUMINANCE_MIN_DELTA_LUX = 10
+        const val MIN_ILLUMINANCE_MIN_DELTA_LUX = 1
+        const val MAX_ILLUMINANCE_MIN_DELTA_LUX = 10000
+        const val DEFAULT_ILLUMINANCE_DEBOUNCE_SECONDS = 10
+        const val MIN_ILLUMINANCE_DEBOUNCE_SECONDS = 1
+        const val MAX_ILLUMINANCE_DEBOUNCE_SECONDS = 3600
         const val DEFAULT_AUTO_DISCOVER_HOME_ASSISTANT = false
         const val DEFAULT_MQTT_ENABLED = false
         const val DEFAULT_MQTT_BROKER_HOST = ""

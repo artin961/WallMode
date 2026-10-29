@@ -58,12 +58,14 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
 
     private val motionDetector = MotionWakeDetector()
     private val proximityGate = ProximityWakeGate()
+    private var illuminanceGate: IlluminanceReportGate? = null
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var analysis: ImageAnalysis? = null
     private var analysisExecutor: ExecutorService? = null
     private var startPending = false
     private var running = false
+    private var presenceActive = false
 
     private var lastAnalysisAtMillis = 0L
     private var lastWakeAtMillis: Long? = null
@@ -81,7 +83,13 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         startForegroundNotification()
-        start()
+        if (running) {
+            // Already up: a repeat start means settings changed — reconfigure
+            // sensors/camera from the latest prefs without a full teardown.
+            reconfigure()
+        } else {
+            start()
+        }
         // Not sticky: the Activity re-starts us from onResume, and a camera FGS
         // may not be relaunched cold by the system on Android 14+ anyway.
         return START_NOT_STICKY
@@ -95,17 +103,68 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
     private fun start() {
         if (running) return
         running = true
-        registerProximitySensor()
-        startCameraPipeline()
+        val settings = prefs.load()
+        presenceActive = settings.ambientModeEnabled && settings.presenceWakeEnabled
+        registerSensors(settings)
+        if (presenceActive) startCameraPipeline()
+    }
+
+    /** Re-reads prefs while already running (settings changed). */
+    private fun reconfigure() {
+        val settings = prefs.load()
+        val wantPresence = settings.ambientModeEnabled && settings.presenceWakeEnabled
+        val wasPresence = presenceActive
+        // Update the flag before registerSensors so it registers proximity for
+        // the desired state.
+        presenceActive = wantPresence
+        registerSensors(settings)
+        if (wantPresence && !wasPresence) {
+            startCameraPipeline()
+        } else if (!wantPresence && wasPresence) {
+            stopCameraPipeline()
+        }
     }
 
     private fun stop() {
         running = false
+        presenceActive = false
         sensorManager.unregisterListener(this)
         proximityGate.reset()
+        illuminanceGate = null
+        IlluminanceState.reset()
         stopCameraPipeline()
         analysisExecutor?.shutdown()
         analysisExecutor = null
+    }
+
+    /**
+     * Registers the proximity sensor (for presence wake) and/or the ambient
+     * light sensor (for illuminance reporting), each gated by its own pref. Both
+     * share this service's single SensorEventListener.
+     */
+    private fun registerSensors(settings: KioskSettings) {
+        sensorManager.unregisterListener(this)
+        proximityGate.reset()
+        illuminanceGate = null
+        IlluminanceState.reset()
+
+        if (presenceActive) {
+            sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)?.let { sensor ->
+                sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+            }
+        }
+        if (settings.illuminanceReportingEnabled) {
+            val light = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT)
+            if (light == null) {
+                prefs.recordLastLoadStatus("Illuminance reporting: no light sensor on this device")
+            } else {
+                illuminanceGate = IlluminanceReportGate(
+                    minDeltaLux = settings.illuminanceMinDeltaLux.toFloat(),
+                    debounceMillis = settings.illuminanceDebounceSeconds * 1_000L
+                )
+                sensorManager.registerListener(this, light, SensorManager.SENSOR_DELAY_NORMAL)
+            }
+        }
     }
 
     // region Camera pipeline (ported from MainActivity, now service-owned)
@@ -229,19 +288,32 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
     // endregion
 
     override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type != Sensor.TYPE_PROXIMITY) return
-        val near = event.values.firstOrNull()?.let { it < event.sensor.maximumRange } ?: return
-        if (!proximityGate.update(near)) return
-        onMotionDetected()
+        when (event.sensor.type) {
+            Sensor.TYPE_PROXIMITY -> {
+                val near = event.values.firstOrNull()?.let { it < event.sensor.maximumRange } ?: return
+                if (proximityGate.update(near)) onMotionDetected()
+            }
+            Sensor.TYPE_LIGHT -> {
+                val lux = event.values.firstOrNull() ?: return
+                onIlluminance(lux)
+            }
+        }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
-    private fun registerProximitySensor() {
-        sensorManager.unregisterListener(this)
-        proximityGate.reset()
-        sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)?.let { sensor ->
-            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+    /**
+     * Applies the delta/debounce gate and, when a reading passes, stores it and
+     * asks MainActivity to publish MQTT state (MainActivity owns the broker
+     * client). Readings that don't pass still update the cached value so a later
+     * state publish reports the freshest lux.
+     */
+    private fun onIlluminance(lux: Float) {
+        val gate = illuminanceGate ?: return
+        if (gate.shouldReport(lux, SystemClock.elapsedRealtime())) {
+            IlluminanceState.recordAndPublish(lux)
+        } else {
+            IlluminanceState.record(lux)
         }
     }
 

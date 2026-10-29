@@ -202,6 +202,10 @@
     <string name="presence_wake_battery_notice">While enabled, the camera stays active on the dashboard too. Frames are processed locally and are not recorded.</string>
     <string name="deep_sleep_enabled">Turn screen off (deep sleep)</string>
     <string name="deep_sleep_notice">Powers the panel fully off instead of dimming. Requires device-owner provisioning; otherwise the screen is driven to full black. Motion turns it back on.</string>
+    <string name="illuminance_reporting_enabled">Report illuminance to Home Assistant (MQTT)</string>
+    <string name="illuminance_reporting_notice">Publishes the built-in light sensor (lux) over MQTT, including while the screen is off. Reports only on significant change.</string>
+    <string name="illuminance_min_delta_lux">Minimum change to report (lux)</string>
+    <string name="illuminance_debounce_seconds">Debounce between reports (seconds)</string>
 
     <string name="updates_enabled">Enable update checks</string>
     <string name="github_repo_slug">GitHub repo (owner/repo)</string>
