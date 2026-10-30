@@ -66,6 +66,7 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
     private var startPending = false
     private var running = false
     private var presenceActive = false
+    @Volatile private var intentionallyStopped = false
 
     private var lastAnalysisAtMillis = 0L
     private var lastWakeAtMillis: Long? = null
@@ -82,6 +83,18 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        if (intent?.action == ACTION_STOP) {
+            intentionallyStopped = true
+            stop()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            stopSelf()
+            return START_NOT_STICKY
+        }
         startForegroundNotification()
         if (running) {
             // Already up: a repeat start means settings changed — reconfigure
@@ -318,16 +331,16 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
     }
 
     /**
-     * Converges camera and proximity motion. Enforces the wake cooldown (moved
-     * here from the Activity) only while the panel is reported OFF, then powers
-     * the screen on and hands the UI reaction to [MainActivity].
+     * Converges camera and proximity motion. Only wakes the screen when the kiosk
+     * itself put the panel to sleep ([WakeSignals.powerState] == OFF). A manual
+     * power-button press never sets that flag, so the service won't fight the user.
      */
     private fun onMotionDetected() {
-        if (AppVisibility.userExited) return
+        if (intentionallyStopped || AppVisibility.userExited) return
         val settings = prefs.load()
         if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) return
 
-        if (!powerManager.isInteractive) {
+        if (WakeSignals.powerState.value == DisplayPowerState.OFF) {
             val now = SystemClock.elapsedRealtime()
             val lastWake = lastWakeAtMillis
             if (lastWake != null && now - lastWake < settings.presenceWakeCooldownSeconds * 1_000L) {
@@ -344,11 +357,12 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
     /**
      * Brings MainActivity (singleTask) to the foreground so a stopped or
      * destroyed kiosk Activity is restored when the panel wakes. Harmless when
-     * it is already foreground.
+     * it is already foreground. Only called when WakeSignals.powerState == OFF,
+     * so the powerManager.isInteractive guard here is redundant and removed.
      */
     private fun bringActivityForward() {
-        if (AppVisibility.userExited) return
-        if (AppVisibility.settingsOpen && powerManager.isInteractive) return
+        if (intentionallyStopped || AppVisibility.userExited) return
+        if (AppVisibility.settingsOpen) return
         val intent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra(MainActivity.EXTRA_WAKE_FROM_MOTION, true)
@@ -410,6 +424,7 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
         private const val PRESENCE_ANALYSIS_INTERVAL_MS = 250L
         private const val WAKE_LOCK_TAG = "wallmode:presence-wake"
         private const val WAKE_PULSE_TIMEOUT_MS = 5_000L
+        const val ACTION_STOP = "io.github.rvbcrs.wallmode.action.STOP"
 
         fun start(context: Context) {
             val intent = Intent(context, PresenceWakeService::class.java)
@@ -417,10 +432,16 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
         }
 
         fun stop(context: Context) {
-            // Plain stopService: restarting a camera foreground service from the
-            // background (what startForegroundService would do) throws on
-            // Android 14+. The caller is the Activity, which is foregrounded.
-            context.stopService(Intent(context, PresenceWakeService::class.java))
+            // Send ACTION_STOP so the service can set intentionallyStopped before
+            // tearing down — this closes the race where in-flight motion detection
+            // would relaunch MainActivity after the user chose to exit the kiosk.
+            val intent = Intent(context, PresenceWakeService::class.java).apply {
+                action = ACTION_STOP
+            }
+            // Use startForegroundService to deliver the stop action reliably;
+            // the service immediately calls stopSelf() on receipt.
+            runCatching { ContextCompat.startForegroundService(context, intent) }
+                .onFailure { context.stopService(Intent(context, PresenceWakeService::class.java)) }
         }
     }
 }

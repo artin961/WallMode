@@ -29,6 +29,22 @@ internal data class ActionCardAction(
     val label: String
 )
 
+internal data class DashboardState(
+    val currentPage: String,
+    val displayMode: String,
+    val screensaverActive: Boolean,
+    val dashboardProblem: Boolean,
+    val ambientBrightness: Int,
+    val ambientTimeout: Int,
+    val ambientScene: String,
+    val activeProfile: String,
+    val profileScheduleEnabled: Boolean,
+    val browserEngine: String,
+    val takeoverActive: Boolean,
+    val takeoverId: String,
+    val takeoverPriority: Int
+)
+
 internal data class WallModeMqttState(
     val batteryPercent: Int,
     val charging: Boolean,

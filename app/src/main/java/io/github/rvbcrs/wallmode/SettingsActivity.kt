@@ -108,6 +108,16 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        AppVisibility.settingsOpen = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        AppVisibility.settingsOpen = false
+    }
+
     override fun onDestroy() {
         ambientPreviewDialog?.dismiss()
         super.onDestroy()

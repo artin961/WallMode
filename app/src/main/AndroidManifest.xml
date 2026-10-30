@@ -64,6 +64,11 @@
         </receiver>
 
         <service
+            android:name=".MqttService"
+            android:enabled="true"
+            android:exported="false" />
+
+        <service
             android:name=".PresenceWakeService"
             android:enabled="true"
             android:exported="false"

@@ -2,12 +2,10 @@ package io.github.rvbcrs.wallmode
 
 import android.Manifest
 import android.app.ActivityManager
-import android.os.BatteryManager
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -18,7 +16,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
@@ -108,13 +105,12 @@ class MainActivity : AppCompatActivity() {
     private var autoDiscoveryJob: Job? = null
     private var screensaverWeatherJob: Job? = null
     private var ambientBackgroundJob: Job? = null
-    private var mqttStateJob: Job? = null
     private var activeEventTakeover: ActiveEventTakeover? = null
     private var eventTakeoverTimeout: Runnable? = null
     private var pendingScheduledProfile = false
     private var activeDashboardProfile: DashboardProfile? = null
     private var localControlServer: LocalControlServer? = null
-    private var mqttManager: MqttManager? = null
+    private var mqttServiceRunning = false
     private var localControlServerPort = -1
     private var pendingPresenceWakePermissionRequest = false
     private var presenceWakePermissionAttempted = false
@@ -171,7 +167,7 @@ class MainActivity : AppCompatActivity() {
             applyWindowSettings()
             applySchedulers()
             refreshLocalControlServer()
-            refreshMqttManager()
+            refreshMqttService()
             if (result.resultCode == RESULT_OK &&
                 result.data?.getBooleanExtra(SettingsActivity.EXTRA_EXIT_APP, false) == true
             ) {
@@ -193,8 +189,7 @@ class MainActivity : AppCompatActivity() {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: android.net.Network) {
             mainHandler.post {
-                mqttManager?.retryInitialConnection()
-                publishMqttState()
+                publishDashboardState()
                 if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
                     maybeAutoDiscoverAndConnect()
                 }
@@ -221,7 +216,7 @@ class MainActivity : AppCompatActivity() {
                         getString(R.string.recovery_waiting)
                     )
                     scheduleRetry("Network lost")
-                    publishMqttState()
+                    publishDashboardState()
                 }
             }
         }
@@ -237,7 +232,7 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         bannerOverlay = BannerOverlay(binding.root) { noticeId, actionId ->
-            mqttManager?.publishActionResponse(noticeId, actionId) == true
+            MqttBridge.publishActionResponse(noticeId, actionId)
         }
         restoreEventTakeover(savedInstanceState)
 
@@ -245,12 +240,12 @@ class MainActivity : AppCompatActivity() {
 
         setupAdminGesture()
         collectWakeSignals()
-        collectIlluminanceSignals()
+        collectMqttBridge()
         registerNetworkMonitoring()
         applyWindowSettings()
         maybePromptStartupCameraPermission()
         refreshLocalControlServer()
-        refreshMqttManager()
+        refreshMqttService()
         applySchedulers()
         if (!resumeEventTakeover()) loadDashboard()
         maybeRunAutoUpdateCheck()
@@ -270,7 +265,7 @@ class MainActivity : AppCompatActivity() {
         resetAmbientTimer()
         applyPresenceWakePolicy()
         refreshLocalControlServer()
-        refreshMqttManager()
+        refreshMqttService()
         maybeAutoDiscoverAndConnect()
     }
 
@@ -368,14 +363,12 @@ class MainActivity : AppCompatActivity() {
         profileJob?.cancel()
         screensaverWeatherJob?.cancel()
         stopAmbientBackground()
-        mqttStateJob?.cancel()
         unregisterNetworkMonitoring()
         stopLocalControlServer()
-        mqttManager?.stop()
-        mqttManager = null
-        // PresenceWakeService is deliberately left running: if the Activity is
-        // destroyed while the screen is off, the service must stay alive to
-        // detect motion and relaunch us.
+        // MqttService is deliberately left running so MQTT stays connected while the
+        // screen is off (the Activity may be destroyed in that state). It will be
+        // stopped explicitly from exitKioskNow() or when the settings disable MQTT.
+        // PresenceWakeService is likewise left running for motion detection.
         mainHandler.removeCallbacksAndMessages(null)
         scope.cancel()
         destroyWebView()
@@ -416,16 +409,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Publishes MQTT state when [PresenceWakeService] reports a significant
-     * illuminance change (the delta/debounce gate lives in the service). The
-     * latest lux is read from [IlluminanceState] when the payload is built. This
-     * deliberately does NOT gate on lifecycle: the service reports while the
-     * screen is fully off (Activity paused), and we must still publish then.
+     * Collects [MqttBridge] flows for the lifetime of the activity:
+     *  - Inbound commands from [MqttService] → [handleMqttCommand]
      */
-    private fun collectIlluminanceSignals() {
+    private fun collectMqttBridge() {
         lifecycleScope.launch {
-            IlluminanceState.publishRequests.collect {
-                publishMqttState()
+            MqttBridge.commands.collect { cmd ->
+                handleMqttCommand(cmd)
             }
         }
     }
@@ -542,7 +532,7 @@ class MainActivity : AppCompatActivity() {
         binding.webView.stopLoading()
         applyWebEngineProfile(settings)
         binding.webView.loadUrl(url)
-        publishMqttState()
+        publishDashboardState()
     }
 
     private fun maybeAutoDiscoverAndConnect() {
@@ -645,7 +635,7 @@ class MainActivity : AppCompatActivity() {
                         return
                     }
                     prefs.recordLastLoadStatus("loading")
-                    publishMqttState()
+                    publishDashboardState()
                 }
 
                 override fun onPageFinished(view: WebView, url: String?) {
@@ -655,7 +645,7 @@ class MainActivity : AppCompatActivity() {
                         prefs.recordLastUrl(url)
                     }
                     prefs.recordLastLoadStatus("loaded")
-                    publishMqttState()
+                    publishDashboardState()
                 }
 
                 override fun onPageCommitVisible(view: WebView, url: String?) {
@@ -670,7 +660,7 @@ class MainActivity : AppCompatActivity() {
                         prefs.recordLastUrl(url)
                     }
                     prefs.recordLastLoadStatus("visible")
-                    publishMqttState()
+                    publishDashboardState()
                 }
 
                 override fun shouldOverrideUrlLoading(
@@ -1124,7 +1114,7 @@ class MainActivity : AppCompatActivity() {
             isScreenOff = false
             WakeSignals.setPowerState(DisplayPowerState.ON)
         }
-        publishMqttState()
+        publishDashboardState()
     }
 
     /**
@@ -1229,7 +1219,7 @@ class MainActivity : AppCompatActivity() {
             screensaver.releaseCustomMedia()
             setWindowBrightness(WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE)
         }
-        if (wasAmbient) publishMqttState()
+        if (wasAmbient) publishDashboardState()
     }
 
     private fun startAmbientBackground(settings: KioskSettings) {
@@ -1365,6 +1355,7 @@ class MainActivity : AppCompatActivity() {
      * wake) because a service cannot request permissions.
      */
     private fun applyPresenceWakePolicy() {
+        if (AppVisibility.userExited) return
         val settings = prefs.load()
         val wantPresence = settings.ambientModeEnabled && settings.presenceWakeEnabled
         val wantIlluminance = settings.illuminanceReportingEnabled
@@ -1552,7 +1543,7 @@ class MainActivity : AppCompatActivity() {
                     val wasAmbient = isAmbientDimmed
                     applyWindowSettings()
                     applySchedulers()
-                    refreshMqttManager()
+                    refreshMqttService()
                     if (section == "dashboard" || section == "browser") loadDashboard()
                     if (wasAmbient && saved.ambientModeEnabled) {
                         ambientDimRunnable?.let(mainHandler::removeCallbacks)
@@ -1644,62 +1635,26 @@ class MainActivity : AppCompatActivity() {
         localControlServerPort = -1
     }
 
-    private fun refreshMqttManager() {
+    private fun refreshMqttService() {
         val settings = prefs.load()
-        val storedPassword = prefs.mqttPassword()
         if (!settings.mqttEnabled) {
-            mqttStateJob?.cancel()
-            mqttStateJob = null
-            mqttManager?.stop(removeDiscovery = true)
-            mqttManager = null
-            prefs.recordMqttState("disabled")
+            stopMqttService()
             return
         }
-        if (!MqttContract.isValidBroker(settings.mqttBrokerHost, settings.mqttBrokerPort) ||
-            (storedPassword.isNotEmpty() && settings.mqttUsername.isBlank())
-        ) {
-            mqttStateJob?.cancel()
-            mqttStateJob = null
-            mqttManager?.stop(removeDiscovery = true)
-            mqttManager = null
-            prefs.recordMqttState("configuration error")
-            return
-        }
+        startMqttService()
+        publishDashboardState()
+    }
 
-        mqttManager?.takeIf { it.matches(settings, storedPassword) }?.let { existing ->
-            existing.retryInitialConnection()
-            publishMqttState()
-            return
-        }
+    private fun startMqttService() {
+        runCatching { MqttService.start(this) }
+            .onSuccess { mqttServiceRunning = true }
+            .onFailure { Log.w(TAG, "MQTT service start failed", it) }
+    }
 
-        mqttManager?.stop(removeDiscovery = true)
-        mqttManager = runCatching {
-            MqttManager(
-                deviceKey = prefs.mqttDeviceKey(),
-                settings = settings,
-                password = storedPassword,
-                appVersion = currentVersionName(),
-                onCommand = { command -> mainHandler.post { handleMqttCommand(command) } },
-                onConnectionState = prefs::recordMqttState,
-                onStateRequested = { mainHandler.post { publishMqttState() } }
-            )
-        }.getOrElse {
-            prefs.recordMqttState("configuration error")
-            Log.w(TAG, "MQTT setup failed", it)
-            null
-        }
-        mqttStateJob?.cancel()
-        mqttStateJob = null
-        mqttManager?.let { manager ->
-            manager.start()
-            publishMqttState()
-            mqttStateJob = scope.launch {
-                while (isActive) {
-                    delay(MQTT_STATE_INTERVAL_MS)
-                    publishMqttState()
-                }
-            }
-        }
+    private fun stopMqttService() {
+        if (!mqttServiceRunning) return
+        runCatching { MqttService.stop(this) }
+        mqttServiceRunning = false
     }
 
     internal fun handleMqttCommand(command: WallModeMqttCommand) {
@@ -1724,12 +1679,12 @@ class MainActivity : AppCompatActivity() {
                 val updated = prefs.load().copy(ambientBrightnessPercent = command.percent)
                 prefs.save(updated)
                 if (isAmbientDimmed) applyAmbientBrightness(updated)
-                publishMqttState()
+                publishDashboardState()
             }
             is WallModeMqttCommand.SetAmbientTimeout -> {
                 prefs.save(prefs.load().copy(ambientDimAfterSeconds = command.seconds))
                 resetAmbientTimer()
-                publishMqttState()
+                publishDashboardState()
             }
             is WallModeMqttCommand.SetAmbientScene -> {
                 val updated = prefs.load().copy(ambientScene = command.scene)
@@ -1743,7 +1698,7 @@ class MainActivity : AppCompatActivity() {
                 ) {
                     startScreensaverWeather(updated.ambientWeatherLocation)
                 }
-                publishMqttState()
+                publishDashboardState()
             }
             is WallModeMqttCommand.OpenProfile -> openDashboardProfile(command.profile)
             is WallModeMqttCommand.SetProfileSchedule -> {
@@ -1755,7 +1710,7 @@ class MainActivity : AppCompatActivity() {
                     )
                 ) {
                     prefs.recordMqttState("profile schedule rejected: invalid start hours")
-                    publishMqttState()
+                    publishDashboardState()
                     return
                 }
                 prefs.save(settings.copy(scheduleProfilesEnabled = command.enabled))
@@ -1763,7 +1718,7 @@ class MainActivity : AppCompatActivity() {
                 if (command.enabled) {
                     if (activeEventTakeover == null) loadDashboard() else pendingScheduledProfile = true
                 } else {
-                    publishMqttState()
+                    publishDashboardState()
                 }
             }
             is WallModeMqttCommand.SetBrowserEngine -> {
@@ -1772,7 +1727,7 @@ class MainActivity : AppCompatActivity() {
                     prefs.save(current.copy(browserEngine = command.engine))
                     recreateCurrentEngine()
                 } else {
-                    publishMqttState()
+                    publishDashboardState()
                 }
             }
             is WallModeMqttCommand.SetDisplayMode -> {
@@ -1790,50 +1745,23 @@ class MainActivity : AppCompatActivity() {
                         enterAmbientMode(settings, showScreensaver = false, deepSleep = true)
                     else -> resetAmbientTimer()
                 }
-                publishMqttState()
+                publishDashboardState()
             }
         }
     }
 
-    private fun publishMqttState() {
-        val manager = mqttManager ?: return
+    private fun publishDashboardState() {
         val settings = prefs.load()
-        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-        val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
-        val batteryPercent = if (level >= 0 && scale > 0) {
-            (level * 100 / scale).coerceIn(0, 100)
-        } else {
-            0
-        }
-        val batteryStatus = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-        val charging = batteryStatus == BatteryManager.BATTERY_STATUS_CHARGING ||
-            batteryStatus == BatteryManager.BATTERY_STATUS_FULL
-        val networkConnected = connectivityManager.activeNetwork?.let { network ->
-            connectivityManager.getNetworkCapabilities(network)
-                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } == true
-        val screenOn = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
         val displayMode = currentDisplayMode()
         val takeover = activeEventTakeover
         val dashboardProblem = mainFrameLoadState.hasProblem ||
             binding.recoveryOverlay.visibility == View.VISIBLE
-        val health = when {
-            !networkConnected -> "offline"
-            dashboardProblem -> "recovering"
-            else -> "ok"
-        }
-        manager.publishState(
-            WallModeMqttState(
-                batteryPercent = batteryPercent,
-                charging = charging,
-                screenOn = screenOn,
+        MqttBridge.publishDashboardState(
+            DashboardState(
+                currentPage = binding.webView.url ?: loadedDashboardUrl,
+                displayMode = displayMode,
                 screensaverActive = displayMode == MqttContract.DISPLAY_SCREENSAVER,
                 dashboardProblem = dashboardProblem,
-                currentPage = binding.webView.url ?: loadedDashboardUrl,
-                health = health,
-                webViewVersion = WebView.getCurrentWebViewPackage()?.versionName ?: "unknown",
-                appVersion = currentVersionName(),
                 ambientBrightness = settings.ambientBrightnessPercent,
                 ambientTimeout = settings.ambientDimAfterSeconds,
                 ambientScene = MqttContract.ambientSceneName(settings.ambientScene),
@@ -1844,16 +1772,9 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     MqttContract.ENGINE_CHROMIUM
                 },
-                displayMode = displayMode,
-                networkConnected = networkConnected,
                 takeoverActive = takeover != null,
                 takeoverId = takeover?.id.orEmpty(),
-                takeoverPriority = takeover?.priority ?: 0,
-                illuminanceLux = if (settings.illuminanceReportingEnabled) {
-                    IlluminanceState.currentLux()
-                } else {
-                    null
-                }
+                takeoverPriority = takeover?.priority ?: 0
             )
         )
     }
@@ -1909,7 +1830,7 @@ class MainActivity : AppCompatActivity() {
         hideActionCardUi()
         loadWebUrl(command.url, prefs.load(), rememberAsDashboard = false)
         scheduleEventTakeoverTimeout(activeEventTakeover!!)
-        publishMqttState()
+        publishDashboardState()
     }
 
     private fun showActionCard(command: WallModeMqttCommand.ShowActionCard) {
@@ -1937,7 +1858,7 @@ class MainActivity : AppCompatActivity() {
         leaveAmbientMode()
         showActionCardUi(command)
         scheduleEventTakeoverTimeout(activeEventTakeover!!)
-        publishMqttState()
+        publishDashboardState()
     }
 
     private fun showActionCardUi(card: WallModeMqttCommand.ShowActionCard) {
@@ -1973,7 +1894,7 @@ class MainActivity : AppCompatActivity() {
         buttons: List<MaterialButton>
     ) {
         buttons.forEach { it.isEnabled = false }
-        if (mqttManager?.publishActionResponse(cardId, actionId) == true) {
+        if (MqttBridge.publishActionResponse(cardId, actionId)) {
             dismissEventTakeover(cardId)
         } else {
             binding.actionCardError.visibility = View.VISIBLE
@@ -2060,7 +1981,7 @@ class MainActivity : AppCompatActivity() {
                 else -> resetAmbientTimer()
             }
         }
-        publishMqttState()
+        publishDashboardState()
     }
 
     private fun cancelEventTakeover(): Boolean {
@@ -2099,7 +2020,7 @@ class MainActivity : AppCompatActivity() {
         mainHandler.post {
             val settings = prefs.load()
             if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) return@post
-            mqttManager?.publishMotion()
+            MqttBridge.publishMotion()
             if (isScreenOff) {
                 wakeScreenFromMotion()
                 return@post
@@ -2312,7 +2233,7 @@ class MainActivity : AppCompatActivity() {
         binding.dashboardFallback.visibility = View.VISIBLE
         prefs.recordLastLoadStatus(reason)
         scheduleRetry(reason)
-        publishMqttState()
+        publishDashboardState()
     }
 
     private fun cancelMainFrameLoadTimeout() {
@@ -2329,6 +2250,7 @@ class MainActivity : AppCompatActivity() {
     private fun exitKioskNow() {
         AppVisibility.userExited = true
         stopPresenceWakeService()
+        stopMqttService()
         attemptStopLockTaskIfRunning()
         finishAndRemoveTask()
     }
@@ -2388,7 +2310,6 @@ class MainActivity : AppCompatActivity() {
         private const val IMMICH_THUMBNAIL_RETRY_DELAY_MS = 5_000L
         private const val QUICK_RELOAD_DELAY_MS = 1_200L
         private const val SCREENSAVER_WEATHER_REFRESH_MS = 30 * 60_000L
-        private const val MQTT_STATE_INTERVAL_MS = 60_000L
         private const val MAIN_FRAME_LOAD_TIMEOUT_MS = 30_000L
         private const val PREVIEW_MAX_DIMENSION_PX = 720
         private const val PREVIEW_CAPTURE_TIMEOUT_SECONDS = 3L
