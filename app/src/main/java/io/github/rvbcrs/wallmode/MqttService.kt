@@ -19,7 +19,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -158,7 +157,7 @@ class MqttService : Service() {
     private fun collectBridgeFlows(manager: MqttManager): Job {
         return serviceScope.launch {
             launch {
-                MqttBridge.dashboardState.distinctUntilChanged().collect { dashboard ->
+                MqttBridge.dashboardState.collect { dashboard ->
                     manager.publishState(buildFullState(dashboard))
                 }
             }

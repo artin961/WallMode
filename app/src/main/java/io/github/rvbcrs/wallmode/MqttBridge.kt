@@ -24,7 +24,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * activity to rebuild state — it can always merge the last [dashboardState]
  * value with its own live device readings.
  */
-object MqttBridge {
+internal object MqttBridge {
     private val _dashboardState = MutableStateFlow<DashboardState?>(null)
     val dashboardState: StateFlow<DashboardState?> = _dashboardState.asStateFlow()
 
