@@ -354,6 +354,7 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
 
         // Respect a manual/OS screen-off: stay off until turned back on manually.
         if (userOrOsOff && settings.respectManualScreenOff) {
+            Log.i(TAG, "Motion detected; screen probably turned off manually, skip waking.")
             return
         }
 

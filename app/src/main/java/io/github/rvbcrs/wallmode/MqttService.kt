@@ -97,7 +97,11 @@ class MqttService : Service() {
     }
 
     private fun registerNetworkCallback() {
-        if (networkCallbackRegistered) return
+        if (networkCallbackRegistered) {
+            Log.d(TAG, "Network callback already registered")
+            return
+        }
+
         runCatching {
             connectivityManager.registerNetworkCallback(
                 NetworkRequest.Builder()
@@ -105,39 +109,74 @@ class MqttService : Service() {
                     .build(),
                 networkCallback
             )
+
             networkCallbackRegistered = true
+            Log.i(TAG, "Network callback registered")
+
+        }.onFailure {
+            Log.e(TAG, "Failed to register network callback", it)
         }
     }
 
     private fun unregisterNetworkCallback() {
-        if (!networkCallbackRegistered) return
-        runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
+        if (!networkCallbackRegistered) {
+            Log.d(TAG, "Network callback not registered; skipping unregister")
+            return
+        }
+
+        runCatching {
+            connectivityManager.unregisterNetworkCallback(networkCallback)
+            Log.i(TAG, "Network callback unregistered")
+        }.onFailure {
+            Log.w(TAG, "Failed to unregister network callback", it)
+        }
+
         networkCallbackRegistered = false
     }
 
     private fun refreshMqttManager() {
+        Log.d(TAG, "Refreshing MQTT manager")
+
         val settings = prefs.load()
         val storedPassword = prefs.mqttPassword()
 
+        Log.d(
+            TAG,
+            "MQTT settings: enabled=${settings.mqttEnabled}, " +
+                    "broker=${settings.mqttBrokerHost}:${settings.mqttBrokerPort}, " +
+                    "usernameConfigured=${settings.mqttUsername.isNotBlank()}"
+        )
+
         if (!settings.mqttEnabled) {
+            Log.i(TAG, "MQTT disabled in settings")
             stopMqttManager(removeDiscovery = true)
             prefs.recordMqttState("disabled")
             return
         }
-        if (!MqttContract.isValidBroker(settings.mqttBrokerHost, settings.mqttBrokerPort) ||
+
+        if (!MqttContract.isValidBroker(
+                settings.mqttBrokerHost,
+                settings.mqttBrokerPort
+            ) ||
             (storedPassword.isNotEmpty() && settings.mqttUsername.isBlank())
         ) {
+            Log.w(TAG, "Invalid MQTT configuration; stopping manager")
             stopMqttManager(removeDiscovery = true)
             prefs.recordMqttState("configuration error")
             return
         }
 
         mqttManager?.takeIf { it.matches(settings, storedPassword) }?.let { existing ->
+            Log.i(TAG, "Existing MQTT manager matches settings; reusing")
+
             existing.retryInitialConnection()
+
+            Log.d(TAG, "Publishing state after MQTT manager refresh")
             existing.publishState(buildFullState(MqttBridge.dashboardState.value))
             return
         }
 
+        Log.i(TAG, "Creating new MQTT manager")
         stopMqttManager(removeDiscovery = true)
 
         val manager = runCatching {
@@ -146,22 +185,39 @@ class MqttService : Service() {
                 settings = settings,
                 password = storedPassword,
                 appVersion = currentVersionName(),
-                onCommand = { cmd -> MqttBridge.emitCommand(cmd) },
-                onConnectionState = prefs::recordMqttState,
-                onStateRequested = { publishNow() }
+                onCommand = { cmd ->
+                    Log.i(TAG, "MQTT command received: $cmd")
+                    MqttBridge.emitCommand(cmd)
+                },
+                onConnectionState = { state ->
+                    Log.i(TAG, "MQTT connection state: $state")
+                    prefs.recordMqttState(state)
+                },
+                onStateRequested = {
+                    Log.d(TAG, "MQTT broker requested state update")
+                    publishNow()
+                }
             )
         }.getOrElse {
+            Log.e(TAG, "MQTT manager initialization failed", it)
             prefs.recordMqttState("configuration error")
-            Log.w(TAG, "MQTT setup failed", it)
             return
         }
+
         mqttManager = manager
+
+        Log.i(TAG, "Starting MQTT manager")
         manager.start()
+
+        Log.i(TAG, "Publishing initial MQTT state")
         manager.publishState(buildFullState(MqttBridge.dashboardState.value))
 
         bridgeCollectionJob?.cancel()
         bridgeCollectionJob = collectBridgeFlows(manager)
+
         startPeriodicStatePublish(manager)
+
+        Log.i(TAG, "MQTT manager started successfully")
     }
 
     private fun collectBridgeFlows(manager: MqttManager): Job {
@@ -200,7 +256,18 @@ class MqttService : Service() {
     }
 
     private fun publishNow() {
-        mqttManager?.publishState(buildFullState(MqttBridge.dashboardState.value))
+        Log.d(TAG, "Immediate state publish requested")
+
+        val manager = mqttManager
+
+        if (manager == null) {
+            Log.w(TAG, "Cannot publish state: MQTT manager unavailable")
+            return
+        }
+
+        manager.publishState(
+            buildFullState(MqttBridge.dashboardState.value)
+        )
     }
 
     private fun buildFullState(dashboard: DashboardState?): WallModeMqttState {
