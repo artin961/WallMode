@@ -608,10 +608,30 @@ class MainActivity : AppCompatActivity() {
                             return@runOnUiThread
                         }
 
+                        // Presence wake owns the camera for motion detection. A
+                        // single-camera device cannot share it, so decline a
+                        // dashboard's camera request rather than trigger a
+                        // "camera in use" exception. Audio-only requests still go
+                        // through the normal grant path below.
+                        val requested = request.resources.orEmpty()
+                        val grantableResources = if (presenceOwnsCamera()) {
+                            requested.filterNot { it == PermissionRequest.RESOURCE_VIDEO_CAPTURE }
+                                .toTypedArray()
+                        } else {
+                            requested
+                        }
+                        if (grantableResources.isEmpty()) {
+                            request.deny()
+                            prefs.recordLastLoadStatus(
+                                "Dashboard camera denied: in use by presence wake"
+                            )
+                            return@runOnUiThread
+                        }
+
                         val requiredPermissions =
-                            mapWebResourcesToAndroidPermissions(request.resources)
+                            mapWebResourcesToAndroidPermissions(grantableResources)
                         if (requiredPermissions.isEmpty() || hasAllPermissions(requiredPermissions)) {
-                            request.grant(request.resources)
+                            request.grant(grantableResources)
                             return@runOnUiThread
                         }
 
@@ -761,7 +781,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun mapWebResourcesToAndroidPermissions(resources: Array<String>): Array<String> {
+    private fun mapWebResourcesToAndroidPermissions(resources: Array<out String>): Array<String> {
         val permissions = linkedSetOf<String>()
         if (resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
             permissions += Manifest.permission.CAMERA
@@ -770,6 +790,17 @@ class MainActivity : AppCompatActivity() {
             permissions += Manifest.permission.RECORD_AUDIO
         }
         return permissions.toTypedArray()
+    }
+
+    /**
+     * True when presence wake is holding the camera (service bound it, or it is
+     * enabled and about to). Used to decline a dashboard's camera request so the
+     * two clients never contend for a single-camera device.
+     */
+    private fun presenceOwnsCamera(): Boolean {
+        if (AppVisibility.presenceCameraActive) return true
+        val settings = prefs.load()
+        return settings.ambientModeEnabled && settings.presenceWakeEnabled
     }
 
     private fun isAllowedTopLevelUrl(url: String?): Boolean {
@@ -2013,13 +2044,13 @@ class MainActivity : AppCompatActivity() {
      * [WakeSignals] collector (fed by [PresenceWakeService]) and directly from
      * instrumentation tests. When the panel is off it is woken via
      * [wakeScreenFromMotion]; otherwise this just undims / resets the idle timer.
-     * The hardware wake pulse and the screen-off cooldown live in the service.
+     * The hardware wake pulse, the screen-off cooldown, and the MQTT motion
+     * publish (with its own cooldown) live in the service.
      */
     internal fun onPresenceDetected() {
         mainHandler.post {
             val settings = prefs.load()
             if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) return@post
-            MqttBridge.publishMotion()
             if (isScreenOff) {
                 wakeScreenFromMotion()
                 return@post

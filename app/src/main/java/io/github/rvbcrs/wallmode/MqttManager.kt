@@ -433,7 +433,11 @@ internal class MqttManager(
     private val deviceSuffix = deviceId.removePrefix("wallmode_")
     private val baseTopic = "wallmode/$deviceSuffix"
     private val availabilityTopic = "$baseTopic/availability"
+    // Per-field state topics live under $baseTopic/state/<field>; each is
+    // published (retained) only when its value changes, so a single flag flip no
+    // longer republishes every sensor.
     private val stateTopic = "$baseTopic/state"
+    private fun fieldTopic(field: String) = "$stateTopic/$field"
     private val motionTopic = "$baseTopic/event/motion"
     private val actionEventTopic = "$baseTopic/${MqttContract.ACTION_EVENT_SUFFIX}"
     private val commandPrefix = "$baseTopic/command/"
@@ -467,7 +471,7 @@ internal class MqttManager(
                 subscribe()
                 publish(discoveryTopic, discoveryPayload, retained = true)
                 publish(availabilityTopic, "online", retained = true)
-                lastState?.let(::publishStateNow)
+                lastState?.let { publishStateDiff(it, force = true) }
                 onConnectionState("connected")
                 onStateRequested()
             }
@@ -529,8 +533,8 @@ internal class MqttManager(
     }
 
     fun publishState(state: WallModeMqttState) {
+        publishStateDiff(state, force = false)
         lastState = state
-        publishStateNow(state)
     }
 
     fun publishMotion() {
@@ -630,33 +634,55 @@ internal class MqttManager(
         }.onFailure { Log.w(TAG, "MQTT subscribe failed", it) }
     }
 
-    private fun publishStateNow(state: WallModeMqttState) {
-        val payload = JSONObject().apply {
-            put("battery", state.batteryPercent)
-            put("charging", state.charging)
-            put("screen_on", state.screenOn)
-            put("screensaver_active", state.screensaverActive)
-            put("dashboard_problem", state.dashboardProblem)
-            put("current_page", MqttContract.safePage(state.currentPage))
-            put("health", state.health.take(255))
-            put("webview_version", state.webViewVersion.take(255))
-            put("app_version", state.appVersion.take(255))
-            put("ambient_brightness", state.ambientBrightness)
-            put("ambient_timeout", state.ambientTimeout)
-            put("ambient_scene", state.ambientScene)
-            put("active_profile", state.activeProfile)
-            put("profile_schedule_enabled", state.profileScheduleEnabled)
-            put("browser_engine", state.browserEngine)
-            put("display_mode", state.displayMode)
-            put("network_connected", state.networkConnected)
-            put("takeover_active", state.takeoverActive)
-            put("takeover_id", state.takeoverId)
-            put("takeover_priority", state.takeoverPriority)
-            // Only include illuminance when a reading exists so HA shows
-            // "unavailable" rather than a stale/zero value when unsupported.
-            state.illuminanceLux?.let { put("illuminance", (it * 10).toInt() / 10.0) }
-        }.toString()
-        publish(stateTopic, payload, retained = true)
+    /**
+     * Maps a state snapshot to its per-field retained topic payloads. Booleans
+     * become ON/OFF to match the binary_sensor discovery; illuminance is omitted
+     * when null so HA shows "unavailable" rather than a stale zero.
+     */
+    private fun fieldPayloads(state: WallModeMqttState): Map<String, String> {
+        val fields = linkedMapOf(
+            "battery" to state.batteryPercent.toString(),
+            "charging" to state.charging.onOff(),
+            "screen_on" to state.screenOn.onOff(),
+            "screensaver_active" to state.screensaverActive.onOff(),
+            "dashboard_problem" to state.dashboardProblem.onOff(),
+            "current_page" to MqttContract.safePage(state.currentPage),
+            "health" to state.health.take(255),
+            "webview_version" to state.webViewVersion.take(255),
+            "app_version" to state.appVersion.take(255),
+            "ambient_brightness" to state.ambientBrightness.toString(),
+            "ambient_timeout" to state.ambientTimeout.toString(),
+            "ambient_scene" to state.ambientScene,
+            "active_profile" to state.activeProfile,
+            "profile_schedule_enabled" to state.profileScheduleEnabled.onOff(),
+            "browser_engine" to state.browserEngine,
+            "display_mode" to state.displayMode,
+            "network_connected" to state.networkConnected.onOff(),
+            "takeover_active" to state.takeoverActive.onOff(),
+            "takeover_id" to state.takeoverId,
+            "takeover_priority" to state.takeoverPriority.toString()
+        )
+        state.illuminanceLux?.let { fields["illuminance"] = ((it * 10).toInt() / 10.0).toString() }
+        return fields
+    }
+
+    private fun Boolean.onOff(): String = if (this) "ON" else "OFF"
+
+    /**
+     * Publishes each field topic (retained) only when its payload differs from
+     * the last published snapshot. [force] republishes every field regardless —
+     * used on (re)connect so the retained topics are refreshed after a broker
+     * restart. Only the changed field's topic is touched otherwise, so a single
+     * flag flip does not republish the rest.
+     */
+    private fun publishStateDiff(state: WallModeMqttState, force: Boolean) {
+        val next = fieldPayloads(state)
+        val previous = if (force) emptyMap() else lastState?.let(::fieldPayloads).orEmpty()
+        next.forEach { (field, payload) ->
+            if (force || previous[field] != payload) {
+                publish(fieldTopic(field), payload, retained = true)
+            }
+        }
     }
 
     private fun publish(topic: String, payload: String, retained: Boolean): Boolean {
@@ -689,10 +715,19 @@ internal class MqttManager(
                 put("name", name)
             }
         }
-        fun stateComponent(id: String, platform: String, name: String, value: String): JSONObject {
+        // Each state-backed entity reads its own retained per-field topic
+        // ($baseTopic/state/<field>) directly, so no value_template is needed.
+        fun stateComponent(id: String, platform: String, name: String, field: String): JSONObject {
             return component(id, platform, name).apply {
-                put("state_topic", stateTopic)
-                put("value_template", "{{ value_json.$value }}")
+                put("state_topic", fieldTopic(field))
+            }
+        }
+        // Binary sensor on a per-field topic carrying ON/OFF.
+        fun binaryComponent(id: String, name: String, field: String): JSONObject {
+            return component(id, "binary_sensor", name).apply {
+                put("state_topic", fieldTopic(field))
+                put("payload_on", "ON")
+                put("payload_off", "OFF")
             }
         }
 
@@ -705,48 +740,37 @@ internal class MqttManager(
             put("device_class", "illuminance")
             put("unit_of_measurement", "lx")
             put("state_class", "measurement")
-            // Absent key → empty state → HA shows "unavailable" rather than 0.
-            put("value_template", "{{ value_json.illuminance | default('', true) }}")
         })
-        components.put("charging", component("charging", "binary_sensor", "Charging").apply {
+        components.put("charging", binaryComponent("charging", "Charging", "charging").apply {
             put("device_class", "battery_charging")
             put("entity_category", "diagnostic")
-            put("state_topic", stateTopic)
-            put("value_template", "{{ 'ON' if value_json.charging else 'OFF' }}")
         })
-        components.put("screen_on", component("screen_on", "binary_sensor", "Screen on").apply {
+        components.put("screen_on", binaryComponent("screen_on", "Screen on", "screen_on").apply {
             put("icon", "mdi:monitor")
-            put("state_topic", stateTopic)
-            put("value_template", "{{ 'ON' if value_json.screen_on else 'OFF' }}")
         })
         components.put(
             "screensaver_active",
-            component("screensaver_active", "binary_sensor", "Screensaver active").apply {
+            binaryComponent("screensaver_active", "Screensaver active", "screensaver_active").apply {
                 put("icon", "mdi:weather-night")
-                put("state_topic", stateTopic)
-                put("value_template", "{{ 'ON' if value_json.screensaver_active else 'OFF' }}")
             }
         )
-        components.put("dashboard_problem", component("dashboard_problem", "binary_sensor", "Dashboard problem").apply {
+        components.put("dashboard_problem", binaryComponent("dashboard_problem", "Dashboard problem", "dashboard_problem").apply {
             put("device_class", "problem")
-            put("state_topic", stateTopic)
-            put("value_template", "{{ 'ON' if value_json.dashboard_problem else 'OFF' }}")
         })
-        components.put("network", component("network", "binary_sensor", "Network").apply {
+        components.put("network", binaryComponent("network", "Network", "network_connected").apply {
             put("device_class", "connectivity")
             put("entity_category", "diagnostic")
-            put("state_topic", stateTopic)
-            put("value_template", "{{ 'ON' if value_json.network_connected else 'OFF' }}")
         })
-        components.put("takeover_active", component("takeover_active", "binary_sensor", "Takeover active").apply {
+        components.put("takeover_active", binaryComponent("takeover_active", "Takeover active", "takeover_active").apply {
             put("icon", "mdi:monitor-eye")
-            put("state_topic", stateTopic)
-            put("value_template", "{{ 'ON' if value_json.takeover_active else 'OFF' }}")
         })
         components.put("motion", component("motion", "binary_sensor", "Motion").apply {
             put("device_class", "motion")
             put("state_topic", motionTopic)
-            put("off_delay", 5)
+            // Longer than the service-side motion publish cooldown so sustained
+            // presence (republished each cooldown window) keeps the HA sensor
+            // solidly ON instead of flapping OFF between throttled republishes.
+            put("off_delay", 35)
         })
         components.put("current_page", stateComponent("current_page", "sensor", "Current page", "current_page").apply {
             put("icon", "mdi:web")
@@ -773,8 +797,9 @@ internal class MqttManager(
         components.put("profile_schedule", component("profile_schedule", "switch", "Profile schedule").apply {
             put("icon", "mdi:calendar-clock")
             put("entity_category", "config")
-            put("state_topic", stateTopic)
-            put("value_template", "{{ 'ON' if value_json.profile_schedule_enabled else 'OFF' }}")
+            put("state_topic", fieldTopic("profile_schedule_enabled"))
+            put("payload_on", "ON")
+            put("payload_off", "OFF")
             put("command_topic", "${commandPrefix}profile_schedule")
         })
         listOf(

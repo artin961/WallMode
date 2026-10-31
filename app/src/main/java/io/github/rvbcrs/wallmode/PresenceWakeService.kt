@@ -70,6 +70,7 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
 
     private var lastAnalysisAtMillis = 0L
     private var lastWakeAtMillis: Long? = null
+    private var lastMotionPublishAtMillis: Long? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -236,6 +237,7 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
             }.onSuccess {
                 cameraProvider = provider
                 analysis = built
+                AppVisibility.presenceCameraActive = true
                 Log.i(TAG, "Presence wake camera started (service)")
             }.onFailure { error ->
                 built.clearAnalyzer()
@@ -246,6 +248,7 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
     }
 
     private fun stopCameraPipeline() {
+        AppVisibility.presenceCameraActive = false
         analysis?.clearAnalyzer()
         analysis?.let { active -> runCatching { cameraProvider?.unbind(active) } }
         analysis = null
@@ -347,6 +350,16 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
         if (intentionallyStopped || AppVisibility.userExited) return
         val settings = prefs.load()
         if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) return
+
+        // Publish motion to HA from the service (survives Activity death), react
+        // fast on the first detection then stay quiet for the cooldown window so a
+        // busy room does not spam the broker. Reuses presenceWakeCooldownSeconds.
+        val nowMs = SystemClock.elapsedRealtime()
+        val lastPublish = lastMotionPublishAtMillis
+        if (lastPublish == null || nowMs - lastPublish >= settings.presenceWakeCooldownSeconds * 1_000L) {
+            lastMotionPublishAtMillis = nowMs
+            MqttBridge.publishMotion()
+        }
 
         val screenIsOff = !powerManager.isInteractive
         val appDrivenOff = WakeSignals.powerState.value == DisplayPowerState.OFF
