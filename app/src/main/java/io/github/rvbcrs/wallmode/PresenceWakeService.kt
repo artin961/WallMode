@@ -331,16 +331,33 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
     }
 
     /**
-     * Converges camera and proximity motion. Only wakes the screen when the kiosk
-     * itself put the panel to sleep ([WakeSignals.powerState] == OFF). A manual
-     * power-button press never sets that flag, so the service won't fight the user.
+     * Converges camera and proximity motion. Classifies the screen-off source
+     * using [PowerManager.isInteractive] (true for any panel-off: app deep sleep,
+     * physical power button, or system timeout) combined with
+     * [WakeSignals.powerState] (only the kiosk's own deep sleep sets it OFF):
+     *
+     *  - app deep sleep    -> !interactive && powerState == OFF
+     *  - user / OS off      -> !interactive && powerState == ON
+     *
+     * When [KioskSettings.respectManualScreenOff] is on, a user/OS off is left
+     * alone (no wake, not even a [WakeSignals.requestWake] tick) until the panel
+     * is turned back on manually, so the service never fights the user.
      */
     private fun onMotionDetected() {
         if (intentionallyStopped || AppVisibility.userExited) return
         val settings = prefs.load()
         if (!settings.presenceWakeEnabled || !settings.ambientModeEnabled) return
 
-        if (WakeSignals.powerState.value == DisplayPowerState.OFF) {
+        val screenIsOff = !powerManager.isInteractive
+        val appDrivenOff = WakeSignals.powerState.value == DisplayPowerState.OFF
+        val userOrOsOff = screenIsOff && !appDrivenOff
+
+        // Respect a manual/OS screen-off: stay off until turned back on manually.
+        if (userOrOsOff && settings.respectManualScreenOff) {
+            return
+        }
+
+        if (screenIsOff) {
             val now = SystemClock.elapsedRealtime()
             val lastWake = lastWakeAtMillis
             if (lastWake != null && now - lastWake < settings.presenceWakeCooldownSeconds * 1_000L) {

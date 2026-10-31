@@ -192,6 +192,7 @@ data class KioskSettings(
     val ambientFollowSystemBrightness: Boolean,
     val presenceWakeEnabled: Boolean,
     val presenceWakeCooldownSeconds: Int,
+    val respectManualScreenOff: Boolean,
     val deepSleepEnabled: Boolean,
     val illuminanceReportingEnabled: Boolean,
     val illuminanceMinDeltaLux: Int,
@@ -400,6 +401,10 @@ class KioskPreferences(context: Context) {
                 MIN_PRESENCE_WAKE_COOLDOWN_SECONDS,
                 MAX_PRESENCE_WAKE_COOLDOWN_SECONDS
             ),
+            respectManualScreenOff = prefs.getBoolean(
+                KEY_RESPECT_MANUAL_SCREEN_OFF,
+                DEFAULT_RESPECT_MANUAL_SCREEN_OFF
+            ),
             deepSleepEnabled = prefs.getBoolean(KEY_DEEP_SLEEP_ENABLED, DEFAULT_DEEP_SLEEP_ENABLED),
             illuminanceReportingEnabled = prefs.getBoolean(
                 KEY_ILLUMINANCE_REPORTING_ENABLED,
@@ -599,6 +604,7 @@ class KioskPreferences(context: Context) {
                     MAX_PRESENCE_WAKE_COOLDOWN_SECONDS
                 )
             )
+            .putBoolean(KEY_RESPECT_MANUAL_SCREEN_OFF, settings.respectManualScreenOff)
             .putBoolean(KEY_DEEP_SLEEP_ENABLED, settings.deepSleepEnabled)
             .putBoolean(KEY_ILLUMINANCE_REPORTING_ENABLED, settings.illuminanceReportingEnabled)
             .putInt(
@@ -699,6 +705,7 @@ class KioskPreferences(context: Context) {
             ambientFollowSystemBrightness = DEFAULT_AMBIENT_FOLLOW_SYSTEM_BRIGHTNESS,
             presenceWakeEnabled = DEFAULT_PRESENCE_WAKE_ENABLED,
             presenceWakeCooldownSeconds = DEFAULT_PRESENCE_WAKE_COOLDOWN_SECONDS,
+            respectManualScreenOff = DEFAULT_RESPECT_MANUAL_SCREEN_OFF,
             deepSleepEnabled = DEFAULT_DEEP_SLEEP_ENABLED,
             illuminanceReportingEnabled = DEFAULT_ILLUMINANCE_REPORTING_ENABLED,
             illuminanceMinDeltaLux = DEFAULT_ILLUMINANCE_MIN_DELTA_LUX,
@@ -913,6 +920,7 @@ class KioskPreferences(context: Context) {
             put("ambientFollowSystemBrightness", settings.ambientFollowSystemBrightness)
             put("presenceWakeEnabled", settings.presenceWakeEnabled)
             put("presenceWakeCooldownSeconds", settings.presenceWakeCooldownSeconds)
+            put("respectManualScreenOff", settings.respectManualScreenOff)
             put("deepSleepEnabled", settings.deepSleepEnabled)
             put("illuminanceReportingEnabled", settings.illuminanceReportingEnabled)
             put("illuminanceMinDeltaLux", settings.illuminanceMinDeltaLux)
@@ -1033,6 +1041,10 @@ class KioskPreferences(context: Context) {
             presenceWakeCooldownSeconds = json.optInt(
                 "presenceWakeCooldownSeconds",
                 current.presenceWakeCooldownSeconds
+            ),
+            respectManualScreenOff = json.optBoolean(
+                "respectManualScreenOff",
+                current.respectManualScreenOff
             ),
             deepSleepEnabled = json.optBoolean("deepSleepEnabled", current.deepSleepEnabled),
             illuminanceReportingEnabled = json.optBoolean(
@@ -1172,6 +1184,7 @@ class KioskPreferences(context: Context) {
             "ambient_follow_system_brightness"
         private const val KEY_PRESENCE_WAKE_ENABLED = "presence_wake_enabled"
         private const val KEY_PRESENCE_WAKE_COOLDOWN_SECONDS = "presence_wake_cooldown_seconds"
+        private const val KEY_RESPECT_MANUAL_SCREEN_OFF = "respect_manual_screen_off"
         private const val KEY_DEEP_SLEEP_ENABLED = "deep_sleep_enabled"
         private const val KEY_ILLUMINANCE_REPORTING_ENABLED = "illuminance_reporting_enabled"
         private const val KEY_ILLUMINANCE_MIN_DELTA_LUX = "illuminance_min_delta_lux"
@@ -1254,6 +1267,7 @@ class KioskPreferences(context: Context) {
         const val DEFAULT_AMBIENT_FOLLOW_SYSTEM_BRIGHTNESS = false
         const val DEFAULT_PRESENCE_WAKE_ENABLED = false
         const val DEFAULT_PRESENCE_WAKE_COOLDOWN_SECONDS = 8
+        const val DEFAULT_RESPECT_MANUAL_SCREEN_OFF = true
         const val DEFAULT_DEEP_SLEEP_ENABLED = false
         const val DEFAULT_ILLUMINANCE_REPORTING_ENABLED = false
         const val DEFAULT_ILLUMINANCE_MIN_DELTA_LUX = 10

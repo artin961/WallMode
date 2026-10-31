@@ -367,6 +367,7 @@ class SettingsActivity : AppCompatActivity() {
             binding.switchAmbientFollowSystemBrightness,
             binding.switchPresenceWake,
             binding.switchDeepSleep,
+            binding.switchRespectManualScreenOff,
             binding.switchIlluminanceReporting,
             binding.switchLocalControlPreview,
             binding.switchMqttTls
@@ -737,6 +738,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.switchPresenceWake.isChecked = settings.presenceWakeEnabled
         binding.inputPresenceWakeCooldown.setText(settings.presenceWakeCooldownSeconds.toString())
         binding.switchDeepSleep.isChecked = settings.deepSleepEnabled
+        binding.switchRespectManualScreenOff.isChecked = settings.respectManualScreenOff
         binding.switchIlluminanceReporting.isChecked = settings.illuminanceReportingEnabled
         binding.inputIlluminanceMinDelta.setText(settings.illuminanceMinDeltaLux.toString())
         binding.inputIlluminanceDebounce.setText(settings.illuminanceDebounceSeconds.toString())
@@ -876,6 +878,7 @@ class SettingsActivity : AppCompatActivity() {
             ambientFollowSystemBrightness = binding.switchAmbientFollowSystemBrightness.isChecked,
             presenceWakeEnabled = binding.switchPresenceWake.isChecked,
             presenceWakeCooldownSeconds = presenceWakeCooldown,
+            respectManualScreenOff = binding.switchRespectManualScreenOff.isChecked,
             deepSleepEnabled = binding.switchDeepSleep.isChecked,
             illuminanceReportingEnabled = binding.switchIlluminanceReporting.isChecked,
             illuminanceMinDeltaLux = illuminanceMinDelta,

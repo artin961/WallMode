@@ -639,28 +639,27 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onPageFinished(view: WebView, url: String?) {
-                    if (!mainFrameLoadState.isVisible || !mainFrameLoadState.isCurrentUrl(url)) return
-                    if (activeEventTakeover == null && !url.isNullOrBlank()) {
-                        loadedDashboardUrl = url
-                        prefs.recordLastUrl(url)
+                    if (mainFrameLoadState.isVisible && mainFrameLoadState.isCurrentUrl(url)) {
+                        if (activeEventTakeover == null && !url.isNullOrBlank()) {
+                            loadedDashboardUrl = url
+                            prefs.recordLastUrl(url)
+                        }
+                        prefs.recordLastLoadStatus("loaded")
+                        publishDashboardState()
+                        return
                     }
-                    prefs.recordLastLoadStatus("loaded")
-                    publishDashboardState()
+                    // Safety net: the load finished while we are still LOADING,
+                    // i.e. onPageCommitVisible never arrived (it can be skipped
+                    // while the window surface is not visible, e.g. a reload that
+                    // fires during a screen-off). Treat a finished main frame as
+                    // visible so the overlay clears once the panel wakes.
+                    if (mainFrameLoadState.isLoading && !url.isNullOrBlank()) {
+                        markMainFrameVisible(url, status = "loaded")
+                    }
                 }
 
                 override fun onPageCommitVisible(view: WebView, url: String?) {
-                    if (!mainFrameLoadState.markVisible(url)) return
-                    cancelMainFrameLoadTimeout()
-                    pendingRetry?.let(mainHandler::removeCallbacks)
-                    pendingRetry = null
-                    binding.dashboardFallback.visibility = View.GONE
-                    binding.recoveryOverlay.visibility = View.GONE
-                    if (activeEventTakeover == null && !url.isNullOrBlank()) {
-                        loadedDashboardUrl = url
-                        prefs.recordLastUrl(url)
-                    }
-                    prefs.recordLastLoadStatus("visible")
-                    publishDashboardState()
+                    markMainFrameVisible(url, status = "visible")
                 }
 
                 override fun shouldOverrideUrlLoading(
@@ -2200,6 +2199,27 @@ class MainActivity : AppCompatActivity() {
         Log.w(TAG, "Scheduled reload in ${settings.reloadIntervalSeconds}s. Reason: $reason")
     }
 
+    /**
+     * Shared "main frame became visible" path used by onPageCommitVisible and
+     * the onPageFinished safety net. Marks the load state visible (adopting any
+     * redirect target), cancels the timeout/retry, hides the loading and recovery
+     * overlays, and records the final URL. No-op when not currently LOADING.
+     */
+    private fun markMainFrameVisible(url: String?, status: String) {
+        if (!mainFrameLoadState.markVisible(url)) return
+        cancelMainFrameLoadTimeout()
+        pendingRetry?.let(mainHandler::removeCallbacks)
+        pendingRetry = null
+        binding.dashboardFallback.visibility = View.GONE
+        binding.recoveryOverlay.visibility = View.GONE
+        if (activeEventTakeover == null && !url.isNullOrBlank()) {
+            loadedDashboardUrl = url
+            prefs.recordLastUrl(url)
+        }
+        prefs.recordLastLoadStatus(status)
+        publishDashboardState()
+    }
+
     private fun beginMainFrameLoad(url: String?) {
         val attempt = mainFrameLoadState.begin(url)
         cancelMainFrameLoadTimeout()
@@ -2465,7 +2485,13 @@ internal class MainFrameLoadState {
     }
 
     fun markVisible(url: String? = currentUrl): Boolean {
-        if (phase != Phase.LOADING || !isCurrentUrl(url)) return false
+        // A main-frame commit-visible (or finished) during our active load is
+        // authoritative, even when the server redirected to a different URL than
+        // we requested (http->https, trailing slash, /lovelace -> /lovelace/0,
+        // auth round-trips). Adopt the final URL rather than rejecting the match,
+        // so the loading overlay reliably clears once the page actually renders.
+        if (phase != Phase.LOADING) return false
+        if (!url.isNullOrBlank()) currentUrl = url
         phase = Phase.VISIBLE
         return true
     }
