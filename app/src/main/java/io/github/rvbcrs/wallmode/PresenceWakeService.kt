@@ -435,7 +435,7 @@ class PresenceWakeService : LifecycleService(), SensorEventListener {
     }
 
     companion object {
-        private const val TAG = "PresenceWakeService"
+        private const val TAG = "WallModePresenceWakeService"
         private const val CHANNEL_ID = "wallmode_presence_wake"
         private const val NOTIFICATION_ID = 42
         private const val PRESENCE_ANALYSIS_INTERVAL_MS = 250L

@@ -53,16 +53,19 @@ class MqttService : Service() {
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
+            Log.i(TAG, "Network available: $network")
             mqttManager?.retryInitialConnection()
             publishNow()
         }
         override fun onLost(network: Network) {
+            Log.w(TAG, "Network lost: $network")
             publishNow()
         }
     }
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(TAG, "MQTT service created")
         prefs = KioskPreferences(this)
         registerNetworkCallback()
     }
@@ -70,7 +73,12 @@ class MqttService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(
+            TAG,
+            "Service start requested: action=${intent?.action}, startId=$startId"
+        )
         if (intent?.action == ACTION_STOP) {
+            Log.i(TAG, "Explicit stop requested")
             stopMqttManager(removeDiscovery = true)
             stopSelf()
             return START_NOT_STICKY
@@ -80,9 +88,11 @@ class MqttService : Service() {
     }
 
     override fun onDestroy() {
+        Log.i(TAG, "MQTT service destroying")
         unregisterNetworkCallback()
         stopMqttManager(removeDiscovery = false)
         serviceScope.cancel()
+        Log.i(TAG, "MQTT service destroyed")
         super.onDestroy()
     }
 
@@ -279,7 +289,7 @@ class MqttService : Service() {
     }
 
     companion object {
-        private const val TAG = "MqttService"
+        private const val TAG = "WallModeMqttService"
         private const val MQTT_STATE_INTERVAL_MS = 60_000L
         const val ACTION_STOP = "io.github.rvbcrs.wallmode.action.MQTT_STOP"
 
