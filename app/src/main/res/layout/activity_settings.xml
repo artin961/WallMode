@@ -1584,6 +1584,12 @@
                                         android:layout_height="wrap_content"
                                         android:layout_marginTop="10dp"
                                         android:text="@string/release_device_owner" />
+                                    <com.google.android.material.button.MaterialButton
+                                        android:id="@+id/btnRequestDeviceOwner"
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:text="Request Device Owner"
+                                        app:icon="@drawable/ic_admin_panel_settings" />
                                 </LinearLayout>
                             </com.google.android.material.card.MaterialCardView>
 

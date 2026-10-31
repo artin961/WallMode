@@ -241,6 +241,9 @@ class SettingsActivity : AppCompatActivity() {
         binding.btnExitKiosk.setOnClickListener {
             maybeExitKiosk()
         }
+        binding.btnRequestDeviceOwner.setOnClickListener {
+            requestDeviceOwner()
+        }
         binding.btnReleaseDeviceOwner.setOnClickListener {
             confirmReleaseDeviceOwner()
         }
@@ -280,18 +283,71 @@ class SettingsActivity : AppCompatActivity() {
         }
         refreshDeviceOwnerStatus()
     }
+    private fun requestDeviceOwner() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+
+        if (dpm.isDeviceOwnerApp(packageName)) {
+            Toast.makeText(
+                this,
+                "App is already Device Owner",
+                Toast.LENGTH_SHORT
+            ).show()
+            refreshDeviceOwnerStatus()
+            return
+        }
+
+        val component = "$packageName/.KioskDeviceAdminReceiver"
+        val command = "adb shell dpm set-device-owner --user 0 $component"
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Request Device Owner")
+            .setMessage(
+                "Device Owner cannot be enabled directly by the app.\n\n" +
+                        "Connect your device to a computer with ADB enabled " +
+                        "and execute the following command:\n\n$command\n\n" +
+                        "This generally requires a freshly reset device " +
+                        "that has not completed device provisioning."
+            )
+            .setNegativeButton(android.R.string.cancel, null)
+            .setNeutralButton("Copy command") { _, _ ->
+                getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(
+                        ClipData.newPlainText("ADB command", command)
+                    )
+
+                Toast.makeText(
+                    this,
+                    "ADB command copied",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
 
     private fun isLockTaskRunning(): Boolean =
         getSystemService(ActivityManager::class.java).lockTaskModeState !=
             ActivityManager.LOCK_TASK_MODE_NONE
 
     private fun refreshDeviceOwnerStatus() {
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE)
+                as DevicePolicyManager
+
         val isOwner = dpm.isDeviceOwnerApp(packageName)
+
         binding.deviceOwnerStatus.setText(
-            if (isOwner) R.string.device_owner_status_active else R.string.device_owner_status_inactive
+            if (isOwner) {
+                R.string.device_owner_status_active
+            } else {
+                R.string.device_owner_status_inactive
+            }
         )
-        binding.btnReleaseDeviceOwner.visibility = if (isOwner) View.VISIBLE else View.GONE
+
+        binding.btnRequestDeviceOwner.visibility =
+            if (isOwner) View.GONE else View.VISIBLE
+
+        binding.btnReleaseDeviceOwner.visibility =
+            if (isOwner) View.VISIBLE else View.GONE
     }
 
     internal fun showSupportLink(providerName: Int, url: String): AlertDialog {
